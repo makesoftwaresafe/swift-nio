@@ -5,7 +5,6 @@ your contribution to Apple and the community, and agree by submitting the patch
 that your contributions are licensed under the Apache 2.0 license (see
 `LICENSE.txt`).
 
-
 ## How to submit a bug report
 
 Please ensure to specify the following:
@@ -19,7 +18,6 @@ Please ensure to specify the following:
   * Swift version or the output of `swift --version`
   * OS version and the output of `uname -a`
   * Network configuration
-
 
 ### Example
 
@@ -65,14 +63,23 @@ We require that your commit messages match our template. The easiest way to do t
 
 The default policy for taking contributions is “Squash and Merge” - because of this the commit message format rule above applies to the PR rather than every commit contained within it.
 
-### Make sure Tests work on Linux
-
-SwiftNIO uses XCTest to run tests on both macOS and Linux. While the macOS version of XCTest is able to use the Objective-C runtime to discover tests at execution time, the Linux version is not (prior to swift 5.1).
-For this reason, whenever you add new tests **you have to run a script** that generates the hooks needed to run those tests on Linux, or our CI will complain that the tests are not all present on Linux. To do this, merely execute `ruby ./scripts/generate_linux_tests.rb` at the root of the package and check the changes it made.
-
 ### Make sure your patch works for all supported versions of swift
 
-The CI will do this for you.  You can use the docker-compose files included if you wish to check locally.  Currently all versions of swift >= 5.4 are supported.  For example usage of docker compose see the main [README](./README.md#an-alternative-using-docker-compose)
+The CI will do this for you, but a project maintainer must kick it off for you.  Currently all versions of Swift >= 5.9 are supported.
+
+If you wish to test this locally you have two options [act](https://github.com/nektos/act) and Docker Compose files.
+
+#### Act
+
+[Install act](https://nektosact.com/installation/) and then you can run the full suite of checks via:
+```
+act pull_request
+```
+Note that SwiftNIO matrix testing makes use of nightly builds, so you may want to make use of the ```--action-offline-mode``` to avoid repulling those.
+
+#### Docker Compose files
+
+You can use the docker-compose files.  For example usage of Docker Compose see the main [README](./README.md#an-alternative-using-docker-compose)
 
 ### Make sure your code is performant
 
@@ -80,9 +87,22 @@ SwiftNIO has been created to be high performance.  The integration tests cover s
 
 ### Formatting
 
-Try to keep your lines less than 120 characters long so github can correctly display your changes.
+Try to keep your lines less than 120 characters long so GitHub can correctly display your changes.
 
-It is intended SwiftNIO will use the swift-format tool in the future to bring consistency to code formatting.  To follow the discussion on this topic see the swift evolution proposal [SE-250](https://github.com/apple/swift-evolution/blob/main/proposals/0250-swift-style-guide-and-formatter.md)
+SwiftNIO uses the [swift-format](https://github.com/swiftlang/swift-format) tool to bring consistency to code formatting.  There is a specific [.swift-format](./.swift-format) configuration file.  This will be checked and enforced on PRs.  Note that the check will run on the current most recent stable version target which may not match that in your own local development environment.
+
+If you want to apply the formatting to your local repo before you commit then you can either run [check-swift-format.sh](https://github.com/swiftlang/github-workflows/blob/main/.github/workflows/scripts/check-swift-format.sh) which will use your current toolchain, or to match the CI checks exactly you can use `act` (see [act section](#act)):
+```
+act --action-offline-mode --bind workflow_call --job soundness --input format_check_enabled=true
+```
+
+If you're using a machine with an ARM64 architecture (such as an Apple Silicon Mac) then
+you'll also need to specify the container architecture:
+```
+act --container-architecture linux/amd64 --action-offline-mode --bind workflow_call --job soundness --input format_check_enabled=true
+```
+
+This will run the format checks, binding to your local checkout so the edits made are to your own source.
 
 ### Extensibility
 
@@ -92,4 +112,4 @@ Try to make sure your code is robust to future extensions.  The public interface
 
 Please open a pull request at https://github.com/apple/swift-nio. Make sure the CI passes, and then wait for code review.
 
-After review you may be asked to make changes.  When you are ready, use the request re-review feature of github or mention the reviewers by name in a comment.
+After review you may be asked to make changes.  When you are ready, use the request re-review feature of GitHub or mention the reviewers by name in a comment.

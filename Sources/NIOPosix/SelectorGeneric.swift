@@ -2,7 +2,7 @@
 //
 // This source file is part of the SwiftNIO open source project
 //
-// Copyright (c) 2017-2021 Apple Inc. and the SwiftNIO project authors
+// Copyright (c) 2017-2024 Apple Inc. and the SwiftNIO project authors
 // Licensed under Apache License v2.0
 //
 // See LICENSE.txt for license information
@@ -12,9 +12,14 @@
 //
 //===----------------------------------------------------------------------===//
 
-import NIOCore
 import NIOConcurrencyHelpers
+import NIOCore
 
+#if os(Linux)
+import CNIOLinux
+#endif
+
+@usableFromInline
 internal enum SelectorLifecycleState {
     case open
     case closing
@@ -22,6 +27,7 @@ internal enum SelectorLifecycleState {
 }
 
 extension Optional {
+    @inlinable
     internal func withUnsafeOptionalPointer<T>(_ body: (UnsafePointer<Wrapped>?) throws -> T) rethrows -> T {
         if var this = self {
             return try withUnsafePointer(to: &this) { x in
@@ -35,6 +41,7 @@ extension Optional {
 
 #if !os(Windows)
 extension timespec {
+    @inlinable
     init(timeAmount amount: TimeAmount) {
         let nsecPerSec: Int64 = 1_000_000_000
         let ns = amount.nanoseconds
@@ -52,41 +59,55 @@ extension timespec {
 /// receives a connection reset, express interest with `[.read, .write, .reset]`.
 /// If then suddenly the socket becomes both readable and writable, the eventing mechanism will tell you about that
 /// fact using `[.read, .write]`.
+@usableFromInline
 struct SelectorEventSet: OptionSet, Equatable {
 
+    @usableFromInline
     typealias RawValue = UInt8
 
+    @usableFromInline
     let rawValue: RawValue
 
     /// It's impossible to actually register for no events, therefore `_none` should only be used to bootstrap a set
     /// of flags or to compare against spurious wakeups.
+    @usableFromInline
     static let _none = SelectorEventSet([])
 
-    /// Connection reset or other errors.
+    /// Connection reset.
+    @usableFromInline
     static let reset = SelectorEventSet(rawValue: 1 << 0)
 
     /// EOF at the read/input end of a `Selectable`.
+    @usableFromInline
     static let readEOF = SelectorEventSet(rawValue: 1 << 1)
 
     /// Interest in/availability of data to be read
+    @usableFromInline
     static let read = SelectorEventSet(rawValue: 1 << 2)
 
     /// Interest in/availability of data to be written
+    @usableFromInline
     static let write = SelectorEventSet(rawValue: 1 << 3)
 
     /// EOF at the write/output end of a `Selectable`.
     ///
-    /// - note: This is rarely used because in many cases, there is no signal that this happened.
+    /// - Note: This is rarely used because in many cases, there is no signal that this happened.
+    @usableFromInline
     static let writeEOF = SelectorEventSet(rawValue: 1 << 4)
 
+    /// Error encountered.
+    @usableFromInline
+    static let error = SelectorEventSet(rawValue: 1 << 5)
+
+    @inlinable
     init(rawValue: SelectorEventSet.RawValue) {
         self.rawValue = rawValue
     }
 }
 
 internal let isEarlyEOFDeliveryWorkingOnThisOS: Bool = {
-    #if os(macOS) || os(iOS) || os(watchOS) || os(tvOS)
-    return false // rdar://53656794 , once fixed we need to do an OS version check here.
+    #if canImport(Darwin)
+    return false  // rdar://53656794 , once fixed we need to do an OS version check here.
     #else
     return true
     #endif
@@ -100,69 +121,109 @@ internal let isEarlyEOFDeliveryWorkingOnThisOS: Bool = {
 protocol _SelectorBackendProtocol {
     associatedtype R: Registration
     func initialiseState0() throws
-    func deinitAssertions0() // allows actual implementation to run some assertions as part of the class deinit
-    func register0<S: Selectable>(selectable: S, fileDescriptor: CInt, interested: SelectorEventSet, registrationID: SelectorRegistrationID) throws
-    func reregister0<S: Selectable>(selectable: S, fileDescriptor: CInt, oldInterested: SelectorEventSet, newInterested: SelectorEventSet, registrationID: SelectorRegistrationID) throws
-    func deregister0<S: Selectable>(selectable: S, fileDescriptor: CInt, oldInterested: SelectorEventSet, registrationID: SelectorRegistrationID) throws
-    /* attention, this may (will!) be called from outside the event loop, ie. can't access mutable shared state (such as `self.open`) */
+    func deinitAssertions0()  // allows actual implementation to run some assertions as part of the class deinit
+    func register0(
+        selectableFD: CInt,
+        fileDescriptor: CInt,
+        interested: SelectorEventSet,
+        registrationID: SelectorRegistrationID
+    ) throws
+    func reregister0(
+        selectableFD: CInt,
+        fileDescriptor: CInt,
+        oldInterested: SelectorEventSet,
+        newInterested: SelectorEventSet,
+        registrationID: SelectorRegistrationID
+    ) throws
+    func deregister0(
+        selectableFD: CInt,
+        fileDescriptor: CInt,
+        oldInterested: SelectorEventSet,
+        registrationID: SelectorRegistrationID
+    ) throws
+
+    // attention, this may (will!) be called from outside the event loop, ie. can't access mutable shared state (such as `self.open`)
     func wakeup0() throws
+
     /// Apply the given `SelectorStrategy` and execute `body` once it's complete (which may produce `SelectorEvent`s to handle).
     ///
-    /// - parameters:
-    ///     - strategy: The `SelectorStrategy` to apply
-    ///     - body: The function to execute for each `SelectorEvent` that was produced.
-    func whenReady0(strategy: SelectorStrategy, onLoopBegin: () -> Void, _ body: (SelectorEvent<R>) throws -> Void) throws -> Void
+    /// - Parameters:
+    ///   - strategy: The `SelectorStrategy` to apply
+    ///   - body: The function to execute for each `SelectorEvent` that was produced.
+    func whenReady0(
+        strategy: SelectorStrategy,
+        onLoopBegin: () -> Void,
+        _ body: (SelectorEvent<R>) throws -> Void
+    ) throws
     func close0() throws
 }
-
 
 ///  A `Selector` allows a user to register different `Selectable` sources to an underlying OS selector, and for that selector to notify them once IO is ready for them to process.
 ///
 /// This implementation offers an consistent API over epoll/liburing (for linux) and kqueue (for Darwin, BSD).
 /// There are specific subclasses  per API type with a shared common superclass providing overall scaffolding.
 
-/* this is deliberately not thread-safe, only the wakeup() function may be called unprotectedly */
-internal class Selector<R: Registration>  {
+// this is deliberately not thread-safe, only the wakeup() function may be called unprotectedly
+@usableFromInline
+internal class Selector<R: Registration> {
+    @usableFromInline
     var lifecycleState: SelectorLifecycleState
+    @usableFromInline
     var registrations = [Int: R]()
+    @usableFromInline
     var registrationID: SelectorRegistrationID = .initialRegistrationID
 
+    @usableFromInline
     let myThread: NIOThread
     // The rules for `self.selectorFD`, `self.eventFD`, and `self.timerFD`:
     // reads: `self.externalSelectorFDLock` OR access from the EventLoop thread
     // writes: `self.externalSelectorFDLock` AND access from the EventLoop thread
-    let externalSelectorFDLock = Lock()
-    var selectorFD: CInt = -1 // -1 == we're closed
+    let externalSelectorFDLock = NIOLock()
+    @usableFromInline
+    var selectorFD: CInt = -1  // -1 == we're closed
 
     // Here we add the stored properties that are used by the specific backends
-    #if os(macOS) || os(iOS) || os(watchOS) || os(tvOS)
+    #if canImport(Darwin)
+    @usableFromInline
     typealias EventType = kevent
     #elseif os(Linux) || os(Android)
     #if !SWIFTNIO_USE_IO_URING
+    @usableFromInline
     typealias EventType = Epoll.epoll_event
+    @usableFromInline
     var earliestTimer: NIODeadline = .distantFuture
-    var eventFD: CInt = -1 // -1 == we're closed
-    var timerFD: CInt = -1 // -1 == we're closed
+    @usableFromInline
+    var eventFD: CInt = -1  // -1 == we're closed
+    @usableFromInline
+    var timerFD: CInt = -1  // -1 == we're closed
     #else
+    @usableFromInline
     typealias EventType = URingEvent
-    var eventFD: CInt = -1 // -1 == we're closed
+    @usableFromInline
+    var eventFD: CInt = -1  // -1 == we're closed
+    @usableFromInline
     var ring = URing()
-    let multishot = URing.io_uring_use_multishot_poll // if true, we run with streaming multishot polls
-    let deferReregistrations = true // if true we only flush once at reentring whenReady() - saves syscalls
-    var deferredReregistrationsPending = false // true if flush needed when reentring whenReady()
+    @usableFromInline
+    let multishot = URing.io_uring_use_multishot_poll  // if true, we run with streaming multishot polls
+    @usableFromInline
+    let deferReregistrations = true  // if true we only flush once at reentring whenReady() - saves syscalls
+    @usableFromInline
+    var deferredReregistrationsPending = false  // true if flush needed when reentring whenReady()
     #endif
     #else
     #error("Unsupported platform, no suitable selector backend (we need kqueue or epoll support)")
     #endif
 
+    @usableFromInline
     var events: UnsafeMutablePointer<EventType>
+    @usableFromInline
     var eventsCapacity = 64
 
     internal func testsOnly_withUnsafeSelectorFD<T>(_ body: (CInt) throws -> T) throws -> T {
         assert(self.myThread != NIOThread.current)
         return try self.externalSelectorFDLock.withLock {
             guard self.selectorFD != -1 else {
-                throw EventLoopError.shutdown
+                throw EventLoopError._shutdown
             }
             return try body(self.selectorFD)
         }
@@ -174,7 +235,7 @@ internal class Selector<R: Registration>  {
         events = Selector.allocateEventsArray(capacity: eventsCapacity)
         try self.initialiseState0()
     }
-    
+
     deinit {
         self.deinitAssertions0()
         assert(self.registrations.count == 0, "left-over registrations: \(self.registrations)")
@@ -182,51 +243,58 @@ internal class Selector<R: Registration>  {
         assert(self.selectorFD == -1, "self.selectorFD == \(self.selectorFD) on Selector deinit, forgot close?")
         Selector.deallocateEventsArray(events: events, capacity: eventsCapacity)
     }
-    
-    private static func allocateEventsArray(capacity: Int) -> UnsafeMutablePointer<EventType> {
+
+    @inlinable
+    internal static func allocateEventsArray(capacity: Int) -> UnsafeMutablePointer<EventType> {
         let events: UnsafeMutablePointer<EventType> = UnsafeMutablePointer.allocate(capacity: capacity)
         events.initialize(to: EventType())
         return events
     }
 
-    private static func deallocateEventsArray(events: UnsafeMutablePointer<EventType>, capacity: Int) {
+    @inlinable
+    internal static func deallocateEventsArray(events: UnsafeMutablePointer<EventType>, capacity: Int) {
         events.deinitialize(count: capacity)
         events.deallocate()
     }
-    
-    func growEventArrayIfNeeded(ready: Int) {
-          assert(self.myThread == NIOThread.current)
-          guard ready == eventsCapacity else {
-              return
-          }
-          Selector.deallocateEventsArray(events: events, capacity: eventsCapacity)
 
-          // double capacity
-          eventsCapacity = ready << 1
-          events = Selector.allocateEventsArray(capacity: eventsCapacity)
-      }
-            
+    @inlinable
+    func growEventArrayIfNeeded(ready: Int) {
+        assert(self.myThread == NIOThread.current)
+        guard ready == eventsCapacity else {
+            return
+        }
+        Selector.deallocateEventsArray(events: events, capacity: eventsCapacity)
+
+        // double capacity
+        eventsCapacity = ready << 1
+        events = Selector.allocateEventsArray(capacity: eventsCapacity)
+    }
+
     /// Register `Selectable` on the `Selector`.
     ///
-    /// - parameters:
-    ///     - selectable: The `Selectable` to register.
-    ///     - interested: The `SelectorEventSet` in which we are interested and want to be notified about.
-    ///     - makeRegistration: Creates the registration data for the given `SelectorEventSet`.
-    func register<S: Selectable>(selectable: S,
-                                 interested: SelectorEventSet,
-                                 makeRegistration: (SelectorEventSet, SelectorRegistrationID) -> R) throws {
+    /// - Parameters:
+    ///   - selectable: The `Selectable` to register.
+    ///   - interested: The `SelectorEventSet` in which we are interested and want to be notified about.
+    ///   - makeRegistration: Creates the registration data for the given `SelectorEventSet`.
+    func register<S: Selectable>(
+        selectable: S,
+        interested: SelectorEventSet,
+        makeRegistration: (SelectorEventSet, SelectorRegistrationID) -> R
+    ) throws {
         assert(self.myThread == NIOThread.current)
-        assert(interested.contains(.reset))
+        assert(interested.contains([.reset, .error]))
         guard self.lifecycleState == .open else {
             throw IOError(errnoCode: EBADF, reason: "can't register on selector as it's \(self.lifecycleState).")
         }
 
         try selectable.withUnsafeHandle { fd in
             assert(registrations[Int(fd)] == nil)
-            try self.register0(selectable: selectable,
-                               fileDescriptor: fd,
-                               interested: interested,
-                               registrationID: self.registrationID)
+            try self.register0(
+                selectableFD: fd,
+                fileDescriptor: fd,
+                interested: interested,
+                registrationID: self.registrationID
+            )
             let registration = makeRegistration(interested, self.registrationID.nextRegistrationID())
             registrations[Int(fd)] = registration
         }
@@ -234,22 +302,27 @@ internal class Selector<R: Registration>  {
 
     /// Re-register `Selectable`, must be registered via `register` before.
     ///
-    /// - parameters:
-    ///     - selectable: The `Selectable` to re-register.
-    ///     - interested: The `SelectorEventSet` in which we are interested and want to be notified about.
+    /// - Parameters:
+    ///   - selectable: The `Selectable` to re-register.
+    ///   - interested: The `SelectorEventSet` in which we are interested and want to be notified about.
     func reregister<S: Selectable>(selectable: S, interested: SelectorEventSet) throws {
         assert(self.myThread == NIOThread.current)
         guard self.lifecycleState == .open else {
             throw IOError(errnoCode: EBADF, reason: "can't re-register on selector as it's \(self.lifecycleState).")
         }
-        assert(interested.contains(.reset), "must register for at least .reset but tried registering for \(interested)")
+        assert(
+            interested.contains([.reset, .error]),
+            "must register for at least .reset & .error but tried registering for \(interested)"
+        )
         try selectable.withUnsafeHandle { fd in
             var reg = registrations[Int(fd)]!
-            try self.reregister0(selectable: selectable,
-                                 fileDescriptor: fd,
-                                 oldInterested: reg.interested,
-                                 newInterested: interested,
-                                 registrationID: reg.registrationID)
+            try self.reregister0(
+                selectableFD: fd,
+                fileDescriptor: fd,
+                oldInterested: reg.interested,
+                newInterested: interested,
+                registrationID: reg.registrationID
+            )
             reg.interested = interested
             self.registrations[Int(fd)] = reg
         }
@@ -259,8 +332,8 @@ internal class Selector<R: Registration>  {
     ///
     /// After the `Selectable is deregistered no `SelectorEventSet` will be produced anymore for the `Selectable`.
     ///
-    /// - parameters:
-    ///     - selectable: The `Selectable` to deregister.
+    /// - Parameters:
+    ///   - selectable: The `Selectable` to deregister.
     func deregister<S: Selectable>(selectable: S) throws {
         assert(self.myThread == NIOThread.current)
         guard self.lifecycleState == .open else {
@@ -271,20 +344,27 @@ internal class Selector<R: Registration>  {
             guard let reg = registrations.removeValue(forKey: Int(fd)) else {
                 return
             }
-            try self.deregister0(selectable: selectable,
-                                 fileDescriptor: fd,
-                                 oldInterested: reg.interested,
-                                 registrationID: reg.registrationID)
+            try self.deregister0(
+                selectableFD: fd,
+                fileDescriptor: fd,
+                oldInterested: reg.interested,
+                registrationID: reg.registrationID
+            )
         }
     }
 
     /// Apply the given `SelectorStrategy` and execute `body` once it's complete (which may produce `SelectorEvent`s to handle).
     ///
-    /// - parameters:
-    ///     - strategy: The `SelectorStrategy` to apply
-    ///     - onLoopBegin: A function executed after the selector returns, just before the main loop begins..
-    ///     - body: The function to execute for each `SelectorEvent` that was produced.
-    func whenReady(strategy: SelectorStrategy, onLoopBegin loopStart: () -> Void, _ body: (SelectorEvent<R>) throws -> Void) throws -> Void {
+    /// - Parameters:
+    ///   - strategy: The `SelectorStrategy` to apply
+    ///   - onLoopBegin: A function executed after the selector returns, just before the main loop begins..
+    ///   - body: The function to execute for each `SelectorEvent` that was produced.
+    @inlinable
+    func whenReady(
+        strategy: SelectorStrategy,
+        onLoopBegin loopStart: () -> Void,
+        _ body: (SelectorEvent<R>) throws -> Void
+    ) throws {
         try self.whenReady0(strategy: strategy, onLoopBegin: loopStart, body)
     }
 
@@ -301,16 +381,17 @@ internal class Selector<R: Registration>  {
         self.registrations.removeAll()
     }
 
-    /* attention, this may (will!) be called from outside the event loop, ie. can't access mutable shared state (such as `self.open`) */
+    // attention, this may (will!) be called from outside the event loop, ie. can't access mutable shared state (such as `self.open`)
     func wakeup() throws {
         try self.wakeup0()
     }
 }
 
 extension Selector: CustomStringConvertible {
+    @usableFromInline
     var description: String {
         func makeDescription() -> String {
-            return "Selector { descriptor = \(self.selectorFD) }"
+            "Selector { descriptor = \(self.selectorFD) }"
         }
 
         if NIOThread.current == self.myThread {
@@ -324,15 +405,17 @@ extension Selector: CustomStringConvertible {
 }
 
 /// An event that is triggered once the `Selector` was able to select something.
+@usableFromInline
 struct SelectorEvent<R> {
     public let registration: R
     public var io: SelectorEventSet
 
     /// Create new instance
     ///
-    /// - parameters:
-    ///     - io: The `SelectorEventSet` that triggered this event.
-    ///     - registration: The registration that belongs to the event.
+    /// - Parameters:
+    ///   - io: The `SelectorEventSet` that triggered this event.
+    ///   - registration: The registration that belongs to the event.
+    @inlinable
     init(io: SelectorEventSet, registration: R) {
         self.io = io
         self.registration = registration
@@ -344,10 +427,13 @@ extension Selector where R == NIORegistration {
     func closeGently(eventLoop: EventLoop) -> EventLoopFuture<Void> {
         assert(self.myThread == NIOThread.current)
         guard self.lifecycleState == .open else {
-            return eventLoop.makeFailedFuture(IOError(errnoCode: EBADF, reason: "can't close selector gently as it's \(self.lifecycleState)."))
+            return eventLoop.makeFailedFuture(
+                IOError(errnoCode: EBADF, reason: "can't close selector gently as it's \(self.lifecycleState).")
+            )
         }
 
-        let futures: [EventLoopFuture<Void>] = self.registrations.map { (_, reg: NIORegistration) -> EventLoopFuture<Void> in
+        let futures: [EventLoopFuture<Void>] = self.registrations.map {
+            (_, reg: NIORegistration) -> EventLoopFuture<Void> in
             // The futures will only be notified (of success) once also the closeFuture of each Channel is notified.
             // This only happens after all other actions on the Channel is complete and all events are propagated through the
             // ChannelPipeline. We do this to minimize the risk to left over any tasks / promises that are tied to the
@@ -386,6 +472,7 @@ extension Selector where R == NIORegistration {
 }
 
 /// The strategy used for the `Selector`.
+@usableFromInline
 enum SelectorStrategy {
     /// Block until there is some IO ready to be processed or the `Selector` is explicitly woken up.
     case block
@@ -406,11 +493,11 @@ enum SelectorStrategy {
     @usableFromInline var _rawValue: UInt32
 
     @inlinable var rawValue: UInt32 {
-        return self._rawValue
+        self._rawValue
     }
 
     @inlinable static var initialRegistrationID: SelectorRegistrationID {
-        return SelectorRegistrationID(rawValue: .max)
+        SelectorRegistrationID(rawValue: .max)
     }
 
     @inlinable mutating func nextRegistrationID() -> SelectorRegistrationID {
@@ -424,8 +511,8 @@ enum SelectorStrategy {
         self._rawValue = rawValue
     }
 
-    @inlinable static func ==(_ lhs: SelectorRegistrationID, _ rhs: SelectorRegistrationID) -> Bool {
-        return lhs._rawValue == rhs._rawValue
+    @inlinable static func == (_ lhs: SelectorRegistrationID, _ rhs: SelectorRegistrationID) -> Bool {
+        lhs._rawValue == rhs._rawValue
     }
 
     @inlinable func hash(into hasher: inout Hasher) {

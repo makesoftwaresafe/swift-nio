@@ -13,18 +13,19 @@
 ##
 ##===----------------------------------------------------------------------===##
 
-import sys
-import re
 import collections
+import re
+import sys
 
-num_regex = "^ +([0-9]+)$"
+num_regex = b"^ +([0-9]+)$"
+
 
 def put_in_dict(path):
     # Our input looks something like:
     #
     # =====
     # This will collect stack shots of allocations and print it when you exit dtrace.
-    # So go ahead, run your tests and then press Ctrl+C in this window to see the aggregated result
+    # So go ahead, run your tests and then press Ctrl+C in this window to see the aggregated result # noqa: E501
     # =====
     # DEBUG: After waiting 1 times, we quiesced to unfreeds=744
     # test_1_reqs_1000_conn.total_allocations: 490000
@@ -39,11 +40,11 @@ def put_in_dict(path):
     #               libswiftCore.dylib`swift_allocObject+0x27
     #               test_1_reqs_1000_conn`closure #3 in SelectableEventLoop.run()+0x166
     #               test_1_reqs_1000_conn`SelectableEventLoop.run()+0x234
-    #               test_1_reqs_1000_conn`closure #1 in static MultiThreadedEventLoopGroup.setupThreadAndEventLoop(name:selectorFactory:initializer:)+0x12e
-    #               test_1_reqs_1000_conn`partial apply for closure #1 in static MultiThreadedEventLoopGroup.setupThreadAndEventLoop(name:selectorFactory:initializer:)+0x25
-    #               test_1_reqs_1000_conn`thunk for @escaping @callee_guaranteed (@guaranteed NIOThread) -> ()+0xf
-    #               test_1_reqs_1000_conn`partial apply for thunk for @escaping @callee_guaranteed (@guaranteed NIOThread) -> ()+0x11
-    #               test_1_reqs_1000_conn`closure #1 in static ThreadOpsPosix.run(handle:args:detachThread:)+0x1c9
+    #               test_1_reqs_1000_conn`closure #1 in static MultiThreadedEventLoopGroup.setupThreadAndEventLoop(name:selectorFactory:initializer:)+0x12e # noqa: E501
+    #               test_1_reqs_1000_conn`partial apply for closure #1 in static MultiThreadedEventLoopGroup.setupThreadAndEventLoop(name:selectorFactory:initializer:)+0x25 # noqa: E501
+    #               test_1_reqs_1000_conn`thunk for @escaping @callee_guaranteed (@guaranteed NIOThread) -> ()+0xf # noqa: E501
+    #               test_1_reqs_1000_conn`partial apply for thunk for @escaping @callee_guaranteed (@guaranteed NIOThread) -> ()+0x11 # noqa: E501
+    #               test_1_reqs_1000_conn`closure #1 in static ThreadOpsPosix.run(handle:args:detachThread:)+0x1c9 # noqa: E501
     #               libsystem_pthread.dylib`_pthread_start+0xe0
     #               libsystem_pthread.dylib`thread_start+0xf
     #             85945
@@ -53,10 +54,10 @@ def put_in_dict(path):
     #               libswiftCore.dylib`swift_allocObject+0x27
     # (truncated)
     dictionary = collections.defaultdict(list)
-    with open(path, "r") as f:
+    with open(path, "rb") as f:
         current_stack = []
         for line in f:
-            if not line.startswith(" "):
+            if not line.startswith(b" "):
                 # All lines we're intereted in are indented so ignore this one.
                 pass
             elif re.match(num_regex, line):
@@ -68,10 +69,10 @@ def put_in_dict(path):
                 # everything before the '+'. We only take at most the first 8
                 # lines for the key so that we group 'similar' stacks in our
                 # output.
-                key = "\n".join(line.split("+")[0] for line in current_stack[:8])
+                key = b"\n".join(line.split(b"+")[0] for line in current_stack[:8])
 
                 # Record this stack and reset our state to build a new one.
-                dictionary[key].append( (int(line), "\n".join(current_stack)) )
+                dictionary[key].append((int(line), b"\n".join(current_stack)))
                 current_stack = []
             else:
                 # This line doesn't contain just a number. This might be an
@@ -82,15 +83,18 @@ def put_in_dict(path):
 
     return dictionary
 
+
 def total_count_for_key(d, key):
     value = d[key]
-    return sum(map(lambda x : x[0], value))
+    return sum(map(lambda x: x[0], value))
+
 
 def total_for_dictionary(d):
     total = 0
     for k in d.keys():
         total += total_count_for_key(d, k)
     return total
+
 
 def extract_useful_keys(d):
     keys = set()
@@ -99,18 +103,20 @@ def extract_useful_keys(d):
             keys.add(k)
     return keys
 
+
 def print_dictionary_member(d, key):
     print(total_count_for_key(d, key))
-    print(key)
+    print(key.decode('utf8'))
     print()
     print_dictionary_member_detail(d, key)
     print()
+
 
 def print_dictionary_member_detail(d, key):
     value = d[key]
     for (count, stack) in value:
         print("    %d" % count)
-        print("        " + stack.replace("\n", "\n        "))
+        print((b"        " + stack.replace(b"\n", b"\n        ")).decode('utf8'))
 
 
 def usage():
@@ -127,6 +133,7 @@ def usage():
     print("  sudo malloc-aggregation.d -c ./new-binary > /tmp/new")
     print("  # diff them")
     print("  stackdiff-dtrace.py /tmp/old /tmp/new")
+
 
 if len(sys.argv) != 3:
     usage()
@@ -173,5 +180,4 @@ for x in sorted(list(useful_before_keys & useful_after_keys)):
 
 everything_before = total_for_dictionary(before_dict)
 everything_after = total_for_dictionary(after_dict)
-print("Total of _EVERYTHING_ BEFORE:  %d,  AFTER:  %d,  DIFFERENCE:  %d" %
-    (everything_before, everything_after, everything_after - everything_before))
+print("Total of _EVERYTHING_ BEFORE:  %d,  AFTER:  %d,  DIFFERENCE:  %d" % (everything_before, everything_after, everything_after - everything_before))  # noqa: E501

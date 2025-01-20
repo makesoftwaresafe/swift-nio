@@ -12,15 +12,22 @@
 //
 //===----------------------------------------------------------------------===//
 
-#if os(macOS) || os(iOS) || os(watchOS) || os(tvOS)
-    import Darwin
-#else
-    import Glibc
-#endif
-import XCTest
-@testable import NIOCore
+import CNIOLinux
 import NIOEmbedded
+import XCTest
+
+@testable import NIOCore
 @testable import NIOPosix
+
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#elseif canImport(Bionic)
+import Bionic
+#else
+#error("The Happy Eyeballs test module was unable to identify your C library.")
+#endif
 
 private let CONNECT_RECORDER = "connectRecorder"
 private let CONNECT_DELAYER = "connectDelayer"
@@ -29,14 +36,14 @@ private let SINGLE_IPv4_RESULT = [SocketAddress(host: "example.com", ipAddress: 
 private let MANY_IPv6_RESULTS = (1...10).map { SocketAddress(host: "example.com", ipAddress: "fe80::\($0)", port: 80) }
 private let MANY_IPv4_RESULTS = (1...10).map { SocketAddress(host: "example.com", ipAddress: "10.0.0.\($0)", port: 80) }
 
-private extension Array where Element == Channel {
-    func finishAll() {
-        self.forEach {
+extension Array where Element == Channel {
+    fileprivate func finishAll() {
+        for element in self {
             do {
-                _ = try($0 as! EmbeddedChannel).finish()
+                _ = try (element as! EmbeddedChannel).finish()
                 // We're happy with no error
             } catch ChannelError.alreadyClosed {
-                return // as well as already closed.
+                return  // as well as already closed.
             } catch {
                 XCTFail("Finishing got error \(error)")
             }
@@ -46,8 +53,8 @@ private extension Array where Element == Channel {
 
 private class DummyError: Error, Equatable {
     // For dummy error equality is identity.
-    static func ==(lhs: DummyError, rhs: DummyError) -> Bool {
-        return ObjectIdentifier(lhs) == ObjectIdentifier(rhs)
+    static func == (lhs: DummyError, rhs: DummyError) -> Bool {
+        ObjectIdentifier(lhs) == ObjectIdentifier(rhs)
     }
 }
 
@@ -93,27 +100,27 @@ private class ConnectionDelayer: ChannelOutboundHandler {
     }
 }
 
-private extension Channel {
-    func connectTarget() -> String? {
-        return try! self.pipeline.context(name: CONNECT_RECORDER).map {
+extension Channel {
+    fileprivate func connectTarget() -> String? {
+        try! self.pipeline.context(name: CONNECT_RECORDER).map {
             ($0.handler as! ConnectRecorder).targetHost
         }.wait()
     }
 
-    func succeedConnection() {
-        return try! self.pipeline.context(name: CONNECT_DELAYER).map {
+    fileprivate func succeedConnection() {
+        try! self.pipeline.context(name: CONNECT_DELAYER).map {
             ($0.handler as! ConnectionDelayer).connectPromise!.succeed(())
         }.wait()
     }
 
-    func failConnection(error: Error) {
-        return try! self.pipeline.context(name: CONNECT_DELAYER).map {
+    fileprivate func failConnection(error: Error) {
+        try! self.pipeline.context(name: CONNECT_DELAYER).map {
             ($0.handler as! ConnectionDelayer).connectPromise!.fail(error)
         }.wait()
     }
 
-    func state() -> ConnectRecorder.State {
-        return try! self.pipeline.context(name: CONNECT_RECORDER).map {
+    fileprivate func state() -> ConnectRecorder.State {
+        try! self.pipeline.context(name: CONNECT_RECORDER).map {
             ($0.handler as! ConnectRecorder).state
         }.flatMapErrorThrowing {
             switch $0 {
@@ -126,8 +133,8 @@ private extension Channel {
     }
 }
 
-private extension SocketAddress {
-    init(host: String, ipAddress: String, port: Int) {
+extension SocketAddress {
+    fileprivate init(host: String, ipAddress: String, port: Int) {
         do {
             var v4addr = in_addr()
             try NIOBSDSocket.inet_pton(addressFamily: .inet, addressDescription: ipAddress, address: &v4addr)
@@ -155,15 +162,28 @@ private extension SocketAddress {
         }
     }
 
-    func toString() -> String {
-        let ptr = UnsafeMutableRawPointer.allocate(byteCount: 256, alignment: 1).bindMemory(to: Int8.self, capacity: 256)
+    fileprivate func toString() -> String {
+        let ptr = UnsafeMutableRawPointer.allocate(byteCount: 256, alignment: 1).bindMemory(
+            to: Int8.self,
+            capacity: 256
+        )
         switch self {
         case .v4(let address):
             var baseAddress = address.address
-            try! NIOBSDSocket.inet_ntop(addressFamily: .inet, addressBytes: &baseAddress.sin_addr, addressDescription: ptr, addressDescriptionLength: 256)
+            try! NIOBSDSocket.inet_ntop(
+                addressFamily: .inet,
+                addressBytes: &baseAddress.sin_addr,
+                addressDescription: ptr,
+                addressDescriptionLength: 256
+            )
         case .v6(let address):
             var baseAddress = address.address
-            try! NIOBSDSocket.inet_ntop(addressFamily: .inet6, addressBytes: &baseAddress.sin6_addr, addressDescription: ptr, addressDescriptionLength: 256)
+            try! NIOBSDSocket.inet_ntop(
+                addressFamily: .inet6,
+                addressBytes: &baseAddress.sin6_addr,
+                addressDescription: ptr,
+                addressDescriptionLength: 256
+            )
         case .unixDomainSocket:
             fatalError("No UDS support in happy eyeballs.")
         }
@@ -174,8 +194,8 @@ private extension SocketAddress {
     }
 }
 
-private extension EventLoopFuture {
-    func getError() -> Error? {
+extension EventLoopFuture {
+    fileprivate func getError() -> Error? {
         guard self.isFulfilled else { return nil }
 
         var error: Error? = nil
@@ -226,22 +246,27 @@ private func defaultChannelBuilder(loop: EventLoop, family: NIOBSDSocket.Protoco
     return loop.makeSucceededFuture(channel)
 }
 
-private func buildEyeballer(host: String,
-                            port: Int,
-                            connectTimeout: TimeAmount = .seconds(10),
-                            channelBuilderCallback: @escaping (EventLoop, NIOBSDSocket.ProtocolFamily) -> EventLoopFuture<Channel> = defaultChannelBuilder) -> (eyeballer: HappyEyeballsConnector, resolver: DummyResolver, loop: EmbeddedEventLoop) {
+private func buildEyeballer(
+    host: String,
+    port: Int,
+    connectTimeout: TimeAmount = .seconds(10),
+    channelBuilderCallback: @escaping (EventLoop, NIOBSDSocket.ProtocolFamily) -> EventLoopFuture<Channel> =
+        defaultChannelBuilder
+) -> (eyeballer: HappyEyeballsConnector<Void>, resolver: DummyResolver, loop: EmbeddedEventLoop) {
     let loop = EmbeddedEventLoop()
     let resolver = DummyResolver(loop: loop)
-    let eyeballer = HappyEyeballsConnector(resolver: resolver,
-                                           loop: loop,
-                                           host: host,
-                                           port: port,
-                                           connectTimeout: connectTimeout,
-                                           channelBuilderCallback: channelBuilderCallback)
+    let eyeballer = HappyEyeballsConnector(
+        resolver: resolver,
+        loop: loop,
+        host: host,
+        port: port,
+        connectTimeout: connectTimeout,
+        channelBuilderCallback: channelBuilderCallback
+    )
     return (eyeballer: eyeballer, resolver: resolver, loop: loop)
 }
 
-public final class HappyEyeballsTest : XCTestCase {
+public final class HappyEyeballsTest: XCTestCase {
     func testIPv4OnlyResolution() throws {
         let (eyeballer, resolver, loop) = buildEyeballer(host: "example.com", port: 80)
         let targetFuture = eyeballer.resolveAndConnect().flatMapThrowing { (channel) -> String? in
@@ -261,7 +286,7 @@ public final class HappyEyeballsTest : XCTestCase {
         // We should have had queries for AAAA and A.
         let expectedQueries: [DummyResolver.Event] = [
             .aaaa(host: "example.com", port: 80),
-            .a(host: "example.com", port: 80)
+            .a(host: "example.com", port: 80),
         ]
         XCTAssertEqual(resolver.events, expectedQueries)
     }
@@ -285,7 +310,7 @@ public final class HappyEyeballsTest : XCTestCase {
         // We should have had queries for AAAA and A.
         let expectedQueries: [DummyResolver.Event] = [
             .aaaa(host: "example.com", port: 80),
-            .a(host: "example.com", port: 80)
+            .a(host: "example.com", port: 80),
         ]
         XCTAssertEqual(resolver.events, expectedQueries)
     }
@@ -295,7 +320,7 @@ public final class HappyEyeballsTest : XCTestCase {
         let channelFuture = eyeballer.resolveAndConnect()
         let expectedQueries: [DummyResolver.Event] = [
             .aaaa(host: "example.com", port: 80),
-            .a(host: "example.com", port: 80)
+            .a(host: "example.com", port: 80),
         ]
         loop.run()
         XCTAssertFalse(channelFuture.isFulfilled)
@@ -331,7 +356,7 @@ public final class HappyEyeballsTest : XCTestCase {
         }
         let expectedQueries: [DummyResolver.Event] = [
             .aaaa(host: "example.com", port: 80),
-            .a(host: "example.com", port: 80)
+            .a(host: "example.com", port: 80),
         ]
         loop.run()
         XCTAssertEqual(resolver.events, expectedQueries)
@@ -363,7 +388,7 @@ public final class HappyEyeballsTest : XCTestCase {
         }
         let expectedQueries: [DummyResolver.Event] = [
             .aaaa(host: "example.com", port: 80),
-            .a(host: "example.com", port: 80)
+            .a(host: "example.com", port: 80),
         ]
         loop.run()
         XCTAssertEqual(resolver.events, expectedQueries)
@@ -405,7 +430,7 @@ public final class HappyEyeballsTest : XCTestCase {
         }
         let expectedQueries: [DummyResolver.Event] = [
             .aaaa(host: "example.com", port: 80),
-            .a(host: "example.com", port: 80)
+            .a(host: "example.com", port: 80),
         ]
         loop.run()
         XCTAssertEqual(resolver.events, expectedQueries)
@@ -439,7 +464,7 @@ public final class HappyEyeballsTest : XCTestCase {
         }
         let expectedQueries: [DummyResolver.Event] = [
             .aaaa(host: "example.com", port: 80),
-            .a(host: "example.com", port: 80)
+            .a(host: "example.com", port: 80),
         ]
         loop.run()
         XCTAssertEqual(resolver.events, expectedQueries)
@@ -473,7 +498,7 @@ public final class HappyEyeballsTest : XCTestCase {
         }
         let expectedQueries: [DummyResolver.Event] = [
             .aaaa(host: "example.com", port: 80),
-            .a(host: "example.com", port: 80)
+            .a(host: "example.com", port: 80),
         ]
         loop.run()
         XCTAssertEqual(resolver.events, expectedQueries)
@@ -503,7 +528,7 @@ public final class HappyEyeballsTest : XCTestCase {
         let channelFuture = eyeballer.resolveAndConnect()
         let expectedQueries: [DummyResolver.Event] = [
             .aaaa(host: "example.com", port: 80),
-            .a(host: "example.com", port: 80)
+            .a(host: "example.com", port: 80),
         ]
         loop.run()
         XCTAssertEqual(resolver.events, expectedQueries)
@@ -512,7 +537,6 @@ public final class HappyEyeballsTest : XCTestCase {
         resolver.v4Promise.succeed([])
         resolver.v6Promise.succeed([])
         loop.run()
-
 
         // We should have had queries for AAAA and A, with no cancel.
         XCTAssertEqual(resolver.events, expectedQueries)
@@ -534,7 +558,7 @@ public final class HappyEyeballsTest : XCTestCase {
         let channelFuture = eyeballer.resolveAndConnect()
         let expectedQueries: [DummyResolver.Event] = [
             .aaaa(host: "example.com", port: 80),
-            .a(host: "example.com", port: 80)
+            .a(host: "example.com", port: 80),
         ]
         loop.run()
         XCTAssertEqual(resolver.events, expectedQueries)
@@ -578,7 +602,7 @@ public final class HappyEyeballsTest : XCTestCase {
         let channelFuture = eyeballer.resolveAndConnect()
         let expectedQueries: [DummyResolver.Event] = [
             .aaaa(host: "example.com", port: 80),
-            .a(host: "example.com", port: 80)
+            .a(host: "example.com", port: 80),
         ]
         loop.run()
         XCTAssertEqual(resolver.events, expectedQueries)
@@ -647,7 +671,7 @@ public final class HappyEyeballsTest : XCTestCase {
         let channelFuture = eyeballer.resolveAndConnect()
         let expectedQueries: [DummyResolver.Event] = [
             .aaaa(host: "example.com", port: 80),
-            .a(host: "example.com", port: 80)
+            .a(host: "example.com", port: 80),
         ]
         loop.run()
         XCTAssertEqual(resolver.events, expectedQueries)
@@ -717,7 +741,7 @@ public final class HappyEyeballsTest : XCTestCase {
         let channelFuture = eyeballer.resolveAndConnect()
         let expectedQueries: [DummyResolver.Event] = [
             .aaaa(host: "example.com", port: 80),
-            .a(host: "example.com", port: 80)
+            .a(host: "example.com", port: 80),
         ]
         loop.run()
         XCTAssertEqual(resolver.events, expectedQueries)
@@ -753,11 +777,15 @@ public final class HappyEyeballsTest : XCTestCase {
     }
 
     func testTimeoutWaitingForAAAA() throws {
-        let (eyeballer, resolver, loop) = buildEyeballer(host: "example.com", port: 80, connectTimeout: .milliseconds(49))
+        let (eyeballer, resolver, loop) = buildEyeballer(
+            host: "example.com",
+            port: 80,
+            connectTimeout: .milliseconds(49)
+        )
         let channelFuture = eyeballer.resolveAndConnect()
         let expectedQueries: [DummyResolver.Event] = [
             .aaaa(host: "example.com", port: 80),
-            .a(host: "example.com", port: 80)
+            .a(host: "example.com", port: 80),
         ]
         loop.run()
         XCTAssertEqual(resolver.events, expectedQueries)
@@ -789,7 +817,11 @@ public final class HappyEyeballsTest : XCTestCase {
             channels.finishAll()
         }
 
-        let (eyeballer, resolver, loop) = buildEyeballer(host: "example.com", port: 80, connectTimeout: .milliseconds(100)) {
+        let (eyeballer, resolver, loop) = buildEyeballer(
+            host: "example.com",
+            port: 80,
+            connectTimeout: .milliseconds(100)
+        ) {
             let channelFuture = defaultChannelBuilder(loop: $0, family: $1)
             channelFuture.whenSuccess { channel in
                 try! channel.pipeline.addHandler(ConnectionDelayer(), name: CONNECT_DELAYER, position: .first).wait()
@@ -800,7 +832,7 @@ public final class HappyEyeballsTest : XCTestCase {
         let channelFuture = eyeballer.resolveAndConnect()
         let expectedQueries: [DummyResolver.Event] = [
             .aaaa(host: "example.com", port: 80),
-            .a(host: "example.com", port: 80)
+            .a(host: "example.com", port: 80),
         ]
         loop.run()
         XCTAssertEqual(resolver.events, expectedQueries)
@@ -834,7 +866,11 @@ public final class HappyEyeballsTest : XCTestCase {
             channels.finishAll()
         }
 
-        let (eyeballer, resolver, loop) = buildEyeballer(host: "example.com", port: 80, connectTimeout: .milliseconds(100)) {
+        let (eyeballer, resolver, loop) = buildEyeballer(
+            host: "example.com",
+            port: 80,
+            connectTimeout: .milliseconds(100)
+        ) {
             let channelFuture = defaultChannelBuilder(loop: $0, family: $1)
             channelFuture.whenSuccess { channel in
                 try! channel.pipeline.addHandler(ConnectionDelayer(), name: CONNECT_DELAYER, position: .first).wait()
@@ -845,7 +881,7 @@ public final class HappyEyeballsTest : XCTestCase {
         let channelFuture = eyeballer.resolveAndConnect()
         let expectedQueries: [DummyResolver.Event] = [
             .aaaa(host: "example.com", port: 80),
-            .a(host: "example.com", port: 80)
+            .a(host: "example.com", port: 80),
         ]
         loop.run()
         XCTAssertEqual(resolver.events, expectedQueries)
@@ -900,7 +936,7 @@ public final class HappyEyeballsTest : XCTestCase {
         let channelFuture = eyeballer.resolveAndConnect()
         let expectedQueries: [DummyResolver.Event] = [
             .aaaa(host: "example.com", port: 80),
-            .a(host: "example.com", port: 80)
+            .a(host: "example.com", port: 80),
         ]
         loop.run()
         XCTAssertEqual(resolver.events, expectedQueries)
@@ -935,7 +971,11 @@ public final class HappyEyeballsTest : XCTestCase {
             channels.finishAll()
         }
 
-        let (eyeballer, resolver, loop) = buildEyeballer(host: "example.com", port: 80, connectTimeout: .milliseconds(100)) {
+        let (eyeballer, resolver, loop) = buildEyeballer(
+            host: "example.com",
+            port: 80,
+            connectTimeout: .milliseconds(100)
+        ) {
             let channelFuture = defaultChannelBuilder(loop: $0, family: $1)
             channelFuture.whenSuccess { channel in
                 try! channel.pipeline.addHandler(ConnectionDelayer(), name: CONNECT_DELAYER, position: .first).wait()
@@ -946,7 +986,7 @@ public final class HappyEyeballsTest : XCTestCase {
         let channelFuture = eyeballer.resolveAndConnect()
         let expectedQueries: [DummyResolver.Event] = [
             .aaaa(host: "example.com", port: 80),
-            .a(host: "example.com", port: 80)
+            .a(host: "example.com", port: 80),
         ]
         loop.run()
         XCTAssertEqual(resolver.events, expectedQueries)
@@ -991,7 +1031,7 @@ public final class HappyEyeballsTest : XCTestCase {
         let channelFuture = eyeballer.resolveAndConnect()
         let expectedQueries: [DummyResolver.Event] = [
             .aaaa(host: "example.com", port: 80),
-            .a(host: "example.com", port: 80)
+            .a(host: "example.com", port: 80),
         ]
         loop.run()
         XCTAssertEqual(resolver.events, expectedQueries)
@@ -1041,7 +1081,7 @@ public final class HappyEyeballsTest : XCTestCase {
         let channelFuture = eyeballer.resolveAndConnect()
         let expectedQueries: [DummyResolver.Event] = [
             .aaaa(host: "example.com", port: 80),
-            .a(host: "example.com", port: 80)
+            .a(host: "example.com", port: 80),
         ]
         loop.run()
         XCTAssertEqual(resolver.events, expectedQueries)
@@ -1078,7 +1118,7 @@ public final class HappyEyeballsTest : XCTestCase {
         let channelFuture = eyeballer.resolveAndConnect()
         let expectedQueries: [DummyResolver.Event] = [
             .aaaa(host: "example.com", port: 80),
-            .a(host: "example.com", port: 80)
+            .a(host: "example.com", port: 80),
         ]
         loop.run()
         XCTAssertEqual(resolver.events, expectedQueries)
@@ -1122,7 +1162,7 @@ public final class HappyEyeballsTest : XCTestCase {
         let channelFuture = eyeballer.resolveAndConnect()
         let expectedQueries: [DummyResolver.Event] = [
             .aaaa(host: "example.com", port: 80),
-            .a(host: "example.com", port: 80)
+            .a(host: "example.com", port: 80),
         ]
         loop.run()
         XCTAssertEqual(resolver.events, expectedQueries)
@@ -1150,7 +1190,11 @@ public final class HappyEyeballsTest : XCTestCase {
             channels.finishAll()
         }
 
-        let (eyeballer, resolver, loop) = buildEyeballer(host: "example.com", port: 80, connectTimeout: .milliseconds(250)) {
+        let (eyeballer, resolver, loop) = buildEyeballer(
+            host: "example.com",
+            port: 80,
+            connectTimeout: .milliseconds(250)
+        ) {
             let channelFuture = defaultChannelBuilder(loop: $0, family: $1)
             channelFuture.whenSuccess { channel in
                 try! channel.pipeline.addHandler(ConnectionDelayer(), name: CONNECT_DELAYER, position: .first).wait()
@@ -1161,7 +1205,7 @@ public final class HappyEyeballsTest : XCTestCase {
         let channelFuture = eyeballer.resolveAndConnect()
         let expectedQueries: [DummyResolver.Event] = [
             .aaaa(host: "example.com", port: 80),
-            .a(host: "example.com", port: 80)
+            .a(host: "example.com", port: 80),
         ]
         loop.run()
         XCTAssertEqual(resolver.events, expectedQueries)
@@ -1194,7 +1238,11 @@ public final class HappyEyeballsTest : XCTestCase {
             channels.finishAll()
         }
 
-        let (eyeballer, resolver, loop) = buildEyeballer(host: "example.com", port: 80, connectTimeout: .milliseconds(50)) {
+        let (eyeballer, resolver, loop) = buildEyeballer(
+            host: "example.com",
+            port: 80,
+            connectTimeout: .milliseconds(50)
+        ) {
             let channelFuture = defaultChannelBuilder(loop: $0, family: $1)
             channelFuture.whenSuccess { channel in
                 try! channel.pipeline.addHandler(ConnectionDelayer(), name: CONNECT_DELAYER, position: .first).wait()
@@ -1205,7 +1253,7 @@ public final class HappyEyeballsTest : XCTestCase {
         let channelFuture = eyeballer.resolveAndConnect()
         let expectedQueries: [DummyResolver.Event] = [
             .aaaa(host: "example.com", port: 80),
-            .a(host: "example.com", port: 80)
+            .a(host: "example.com", port: 80),
         ]
         loop.run()
         XCTAssertEqual(resolver.events, expectedQueries)
@@ -1230,5 +1278,82 @@ public final class HappyEyeballsTest : XCTestCase {
         for channel in channels {
             XCTAssertEqual(channel.state(), .closed)
         }
+    }
+
+    func testResolverOnDifferentEventLoop() throws {
+        // Tests a regression where the happy eyeballs connector would update its state on the event
+        // loop of the future returned by the resolver (which may be different to its own). Prior
+        // to the fix this test would trigger TSAN warnings.
+        let group = MultiThreadedEventLoopGroup(numberOfThreads: 2)
+        defer {
+            XCTAssertNoThrow(try group.syncShutdownGracefully())
+        }
+
+        let server = try ServerBootstrap(group: group)
+            .bind(host: "localhost", port: 0)
+            .wait()
+
+        defer {
+            XCTAssertNoThrow(try server.close().wait())
+        }
+
+        // Run the resolver and connection on different event loops.
+        let resolverLoop = group.next()
+        let connectionLoop = group.next()
+        XCTAssertNotIdentical(resolverLoop, connectionLoop)
+        let resolver = GetaddrinfoResolver(loop: resolverLoop, aiSocktype: .stream, aiProtocol: .tcp)
+        let client = try ClientBootstrap(group: connectionLoop)
+            .resolver(resolver)
+            .connect(host: "localhost", port: server.localAddress!.port!)
+            .wait()
+
+        XCTAssertNoThrow(try client.close().wait())
+    }
+
+    func testResolutionTimeoutAndResolutionInSameTick() throws {
+        var channels: [Channel] = []
+        let (eyeballer, resolver, loop) = buildEyeballer(host: "example.com", port: 80) {
+            let channelFuture = defaultChannelBuilder(loop: $0, family: $1)
+            channelFuture.whenSuccess { channel in
+                try! channel.pipeline.addHandler(ConnectionDelayer(), name: CONNECT_DELAYER, position: .first).wait()
+                channels.append(channel)
+            }
+            return channelFuture
+        }
+        let targetFuture = eyeballer.resolveAndConnect().flatMapThrowing { (channel) -> String? in
+            let target = channel.connectTarget()
+            _ = try (channel as! EmbeddedChannel).finish()
+            return target
+        }
+        loop.run()
+
+        // Then, queue a task to resolve the v6 promise after 50ms.
+        // Why 50ms? This is the same time as the resolution delay.
+        let promise = resolver.v6Promise
+        loop.scheduleTask(in: .milliseconds(50)) {
+            promise.fail(DummyError())
+        }
+
+        // Kick off the IPv4 resolution. This triggers the timer for the resolution delay.
+        resolver.v4Promise.succeed(SINGLE_IPv4_RESULT)
+        loop.run()
+
+        // Advance time 50ms.
+        loop.advanceTime(by: .milliseconds(50))
+
+        // Then complete the connection future.
+        XCTAssertEqual(channels.count, 1)
+        channels.first!.succeedConnection()
+
+        // Should be done.
+        let target = try targetFuture.wait()
+        XCTAssertEqual(target!, "10.0.0.1")
+
+        // We should have had queries for AAAA and A.
+        let expectedQueries: [DummyResolver.Event] = [
+            .aaaa(host: "example.com", port: 80),
+            .a(host: "example.com", port: 80),
+        ]
+        XCTAssertEqual(resolver.events, expectedQueries)
     }
 }

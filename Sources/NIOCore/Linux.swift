@@ -2,7 +2,7 @@
 //
 // This source file is part of the SwiftNIO open source project
 //
-// Copyright (c) 2017-2018 Apple Inc. and the SwiftNIO project authors
+// Copyright (c) 2017-2023 Apple Inc. and the SwiftNIO project authors
 // Licensed under Apache License v2.0
 //
 // See LICENSE.txt for license information
@@ -21,15 +21,16 @@ enum Linux {
     static let cfsQuotaPath = "/sys/fs/cgroup/cpu/cpu.cfs_quota_us"
     static let cfsPeriodPath = "/sys/fs/cgroup/cpu/cpu.cfs_period_us"
     static let cpuSetPath = "/sys/fs/cgroup/cpuset/cpuset.cpus"
+    static let cfsCpuMaxPath = "/sys/fs/cgroup/cpu.max"
 
     private static func firstLineOfFile(path: String) throws -> Substring {
-        let fh = try NIOFileHandle(path: path)
+        let fh = try NIOFileHandle(_deprecatedPath: path)
         defer { try! fh.close() }
         // linux doesn't properly report /sys/fs/cgroup/* files lengths so we use a reasonable limit
         var buf = ByteBufferAllocator().buffer(capacity: 1024)
         try buf.writeWithUnsafeMutableBytes(minimumWritableBytes: buf.capacity) { ptr in
             let res = try fh.withUnsafeFileDescriptor { fd -> CoreIOResult<ssize_t> in
-                return try SystemCalls.read(descriptor: fd, pointer: ptr.baseAddress!, size: ptr.count)
+                try SystemCalls.read(descriptor: fd, pointer: ptr.baseAddress!, size: ptr.count)
             }
             switch res {
             case .processed(let n):
@@ -59,7 +60,12 @@ enum Linux {
         return cpuset.map(countCoreIds).reduce(0, +)
     }
 
-    static func coreCount(quota quotaPath: String,  period periodPath: String) -> Int? {
+    /// Get the available core count according to cgroup1 restrictions.
+    /// Round up to the next whole number.
+    static func coreCountCgroup1Restriction(
+        quota quotaPath: String = Linux.cfsQuotaPath,
+        period periodPath: String = Linux.cfsPeriodPath
+    ) -> Int? {
         guard
             let quota = try? Int(firstLineOfFile(path: quotaPath)),
             quota > 0
@@ -68,7 +74,18 @@ enum Linux {
             let period = try? Int(firstLineOfFile(path: periodPath)),
             period > 0
         else { return nil }
-        return (quota - 1 + period) / period // always round up if fractional CPU quota requested
+        return (quota - 1 + period) / period  // always round up if fractional CPU quota requested
+    }
+
+    /// Get the available core count according to cgroup2 restrictions.
+    /// Round up to the next whole number.
+    static func coreCountCgroup2Restriction(cpuMaxPath: String = Linux.cfsCpuMaxPath) -> Int? {
+        guard let maxDetails = try? firstLineOfFile(path: cpuMaxPath),
+            let spaceIndex = maxDetails.firstIndex(of: " "),
+            let quota = Int(maxDetails[maxDetails.startIndex..<spaceIndex]),
+            let period = Int(maxDetails[maxDetails.index(after: spaceIndex)..<maxDetails.endIndex])
+        else { return nil }
+        return (quota - 1 + period) / period  // always round up if fractional CPU quota requested
     }
 }
 #endif

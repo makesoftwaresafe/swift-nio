@@ -13,7 +13,7 @@
 //===----------------------------------------------------------------------===//
 import NIOCore
 
-#if os(macOS) || os(iOS) || os(watchOS) || os(tvOS)
+#if canImport(Darwin)
 import CNIODarwin
 #elseif os(Linux) || os(FreeBSD) || os(Android)
 import CNIOLinux
@@ -26,46 +26,72 @@ import CNIOWindows
 struct UnsafeControlMessageStorage: Collection {
     let bytesPerMessage: Int
     var buffer: UnsafeMutableRawBufferPointer
+    private let deallocateBuffer: Bool
 
     /// Initialise which includes allocating memory
-    /// parameter:
-    /// - bytesPerMessage: How many bytes have been allocated for each supported message.
-    /// - buffer: The memory allocated to use for control messages.
-    private init(bytesPerMessage: Int, buffer: UnsafeMutableRawBufferPointer) {
+    /// - Parameters:
+    ///   - bytesPerMessage: How many bytes have been allocated for each supported message.
+    ///   - buffer: The memory allocated to use for control messages.
+    ///   - deallocateBuffer: buffer owning indicator
+    private init(bytesPerMessage: Int, buffer: UnsafeMutableRawBufferPointer, deallocateBuffer: Bool) {
         self.bytesPerMessage = bytesPerMessage
         self.buffer = buffer
+        self.deallocateBuffer = deallocateBuffer
     }
 
+    // Guess that 4 Int32 payload messages is enough for anyone.
+    static var bytesPerMessage: Int { NIOBSDSocketControlMessage.space(payloadSize: MemoryLayout<Int32>.stride) * 4 }
+
     /// Allocate new memory - Caller must call `deallocate` when no longer required.
-    /// parameter:
+    /// - Parameters:
     ///   - msghdrCount: How many `msghdr` structures will be fed from this buffer - we assume 4 Int32 cmsgs for each.
     static func allocate(msghdrCount: Int) -> UnsafeControlMessageStorage {
-        // Guess that 4 Int32 payload messages is enough for anyone.
-        let bytesPerMessage = NIOBSDSocketControlMessage.space(payloadSize: MemoryLayout<Int32>.stride) * 4
-        let buffer = UnsafeMutableRawBufferPointer.allocate(byteCount: bytesPerMessage * msghdrCount,
-                                                             alignment: MemoryLayout<cmsghdr>.alignment)
-        return UnsafeControlMessageStorage(bytesPerMessage: bytesPerMessage, buffer: buffer)
+        let bytesPerMessage = Self.bytesPerMessage
+        let buffer = UnsafeMutableRawBufferPointer.allocate(
+            byteCount: bytesPerMessage * msghdrCount,
+            alignment: MemoryLayout<cmsghdr>.alignment
+        )
+        return UnsafeControlMessageStorage(bytesPerMessage: bytesPerMessage, buffer: buffer, deallocateBuffer: true)
+    }
+
+    /// Create an instance not owning the buffer
+    /// - Parameters:
+    ///   - bytesPerMessage: How many bytes have been allocated for each supported message.
+    ///   - buffer: The memory allocated to use for control messages.
+    static func makeNotOwning(
+        bytesPerMessage: Int,
+        buffer: UnsafeMutableRawBufferPointer
+    ) -> UnsafeControlMessageStorage {
+        precondition(buffer.count >= bytesPerMessage)
+        return UnsafeControlMessageStorage(bytesPerMessage: bytesPerMessage, buffer: buffer, deallocateBuffer: false)
     }
 
     mutating func deallocate() {
-        self.buffer.deallocate()
-        self.buffer = UnsafeMutableRawBufferPointer(start: UnsafeMutableRawPointer(bitPattern: 0x7eadbeef), count: 0)
+        if self.deallocateBuffer {
+            self.buffer.deallocate()
+            self.buffer = UnsafeMutableRawBufferPointer(
+                start: UnsafeMutableRawPointer(bitPattern: 0x7ead_beef),
+                count: 0
+            )
+        }
     }
 
     /// Get the part of the buffer for use with a message.
     public subscript(position: Int) -> UnsafeMutableRawBufferPointer {
-        return UnsafeMutableRawBufferPointer(
-            fastRebase: self.buffer[(position * self.bytesPerMessage)..<((position+1) * self.bytesPerMessage)])
+        UnsafeMutableRawBufferPointer(
+            rebasing: self.buffer[
+                (position * self.bytesPerMessage)..<((position + 1) * self.bytesPerMessage)
+            ]
+        )
     }
 
-    var startIndex: Int { return 0 }
+    var startIndex: Int { 0 }
 
-    var endIndex: Int { return self.buffer.count / self.bytesPerMessage }
+    var endIndex: Int { self.buffer.count / self.bytesPerMessage }
 
     func index(after: Int) -> Int {
-        return after + 1
+        after + 1
     }
-
 }
 
 /// Representation of a `cmsghdr` and associated data.
@@ -89,12 +115,14 @@ struct UnsafeControlMessageCollection {
 // Add the `Collection` functionality to UnsafeControlMessageCollection.
 extension UnsafeControlMessageCollection: Collection {
     typealias Element = UnsafeControlMessage
-    
+
     struct Index: Equatable, Comparable {
         fileprivate var cmsgPointer: UnsafeMutablePointer<cmsghdr>?
-        
-        static func < (lhs: UnsafeControlMessageCollection.Index,
-                       rhs: UnsafeControlMessageCollection.Index) -> Bool {
+
+        static func < (
+            lhs: UnsafeControlMessageCollection.Index,
+            rhs: UnsafeControlMessageCollection.Index
+        ) -> Bool {
             // nil is high, as that's the end of the collection.
             switch (lhs.cmsgPointer, rhs.cmsgPointer) {
             case (.some(let lhs), .some(let rhs)):
@@ -105,12 +133,12 @@ extension UnsafeControlMessageCollection: Collection {
                 return false
             }
         }
-        
+
         fileprivate init(cmsgPointer: UnsafeMutablePointer<cmsghdr>?) {
             self.cmsgPointer = cmsgPointer
         }
     }
-    
+
     var startIndex: Index {
         var messageHeader = self.messageHeader
         return withUnsafePointer(to: &messageHeader) { messageHeaderPtr in
@@ -118,22 +146,28 @@ extension UnsafeControlMessageCollection: Collection {
             return Index(cmsgPointer: firstCMsg)
         }
     }
-    
-    var endIndex: Index { return Index(cmsgPointer: nil) }
-    
+
+    var endIndex: Index { Index(cmsgPointer: nil) }
+
     func index(after: Index) -> Index {
         var msgHdr = messageHeader
         return withUnsafeMutablePointer(to: &msgHdr) { messageHeaderPtr in
-            return Index(cmsgPointer: NIOBSDSocketControlMessage.nextHeader(inside: messageHeaderPtr,
-                                                           after: after.cmsgPointer!))
+            Index(
+                cmsgPointer: NIOBSDSocketControlMessage.nextHeader(
+                    inside: messageHeaderPtr,
+                    after: after.cmsgPointer!
+                )
+            )
         }
     }
-    
+
     public subscript(position: Index) -> Element {
         let cmsg = position.cmsgPointer!
-        return UnsafeControlMessage(level: cmsg.pointee.cmsg_level,
-                                    type: cmsg.pointee.cmsg_type,
-                                    data: NIOBSDSocketControlMessage.data(for: cmsg))
+        return UnsafeControlMessage(
+            level: cmsg.pointee.cmsg_level,
+            type: cmsg.pointee.cmsg_type,
+            data: NIOBSDSocketControlMessage.data(for: cmsg)
+        )
     }
 }
 
@@ -150,7 +184,7 @@ struct UnsafeReceivedControlBytes {
 
 /// Extract information from a collection of control messages.
 struct ControlMessageParser {
-    var ecnValue: NIOExplicitCongestionNotificationState = .transportNotCapable // Default
+    var ecnValue: NIOExplicitCongestionNotificationState = .transportNotCapable  // Default
     var packetInfo: NIOPacketInfo? = nil
 
     init(parsing controlMessagesReceived: UnsafeControlMessageCollection) {
@@ -158,11 +192,11 @@ struct ControlMessageParser {
             self.receiveMessage(controlMessage)
         }
     }
-    
-    #if os(macOS) || os(iOS) || os(watchOS) || os(tvOS)
+
+    #if canImport(Darwin)
     private static let ipv4TosType = IP_RECVTOS
     #else
-    private static let ipv4TosType = IP_TOS    // Linux
+    private static let ipv4TosType = IP_TOS  // Linux
     #endif
 
     static func _readCInt(data: UnsafeRawBufferPointer) -> CInt {
@@ -174,7 +208,7 @@ struct ControlMessageParser {
         }
         return readValue
     }
-    
+
     private mutating func receiveMessage(_ controlMessage: UnsafeControlMessage) {
         if controlMessage.level == IPPROTO_IP {
             self.receiveIPv4Message(controlMessage)
@@ -198,8 +232,10 @@ struct ControlMessageParser {
                 addr.sin_family = sa_family_t(NIOBSDSocket.AddressFamily.inet.rawValue)
                 addr.sin_port = in_port_t(0)
                 addr.sin_addr = info.ipi_addr
-                self.packetInfo = NIOPacketInfo(destinationAddress: SocketAddress(addr, host: ""),
-                                                interfaceIndex: Int(info.ipi_ifindex))
+                self.packetInfo = NIOPacketInfo(
+                    destinationAddress: SocketAddress(addr, host: ""),
+                    interfaceIndex: Int(info.ipi_ifindex)
+                )
             }
 
         }
@@ -220,8 +256,10 @@ struct ControlMessageParser {
                 addr.sin6_flowinfo = 0
                 addr.sin6_addr = info.ipi6_addr
                 addr.sin6_scope_id = 0
-                self.packetInfo = NIOPacketInfo(destinationAddress: SocketAddress(addr, host: ""),
-                                                interfaceIndex: Int(info.ipi6_ifindex))
+                self.packetInfo = NIOPacketInfo(
+                    destinationAddress: SocketAddress(addr, host: ""),
+                    interfaceIndex: Int(info.ipi6_ifindex)
+                )
             }
         }
     }
@@ -262,7 +300,7 @@ extension CInt {
 struct UnsafeOutboundControlBytes {
     private var controlBytes: UnsafeMutableRawBufferPointer
     private var writePosition: UnsafeMutableRawBufferPointer.Index
-    
+
     /// This structure must not outlive `controlBytes`
     init(controlBytes: UnsafeMutableRawBufferPointer) {
         self.controlBytes = controlBytes
@@ -275,56 +313,68 @@ struct UnsafeOutboundControlBytes {
 
     /// Appends a control message.
     /// PayloadType needs to be trivial (eg CInt)
-    private mutating func appendGenericControlMessage<PayloadType>(level: CInt,
-                                                                   type: CInt,
-                                                                   payload: PayloadType) {
-        let writableBuffer = UnsafeMutableRawBufferPointer(fastRebase: self.controlBytes[writePosition...])
-        
+    private mutating func appendGenericControlMessage<PayloadType>(
+        level: CInt,
+        type: CInt,
+        payload: PayloadType
+    ) {
+        let writableBuffer = UnsafeMutableRawBufferPointer(
+            rebasing: self.controlBytes[writePosition...]
+        )
+
         let requiredSize = NIOBSDSocketControlMessage.space(payloadSize: MemoryLayout.stride(ofValue: payload))
         precondition(writableBuffer.count >= requiredSize, "Insufficient size for cmsghdr and data")
-        
+
         let bufferBase = writableBuffer.baseAddress!
         // Binding to cmsghdr is safe here as this is the only place where we bind to non-Raw.
         let cmsghdrPtr = bufferBase.bindMemory(to: cmsghdr.self, capacity: 1)
         cmsghdrPtr.pointee.cmsg_level = level
         cmsghdrPtr.pointee.cmsg_type = type
-        cmsghdrPtr.pointee.cmsg_len = .init(NIOBSDSocketControlMessage.length(payloadSize: MemoryLayout.size(ofValue: payload)))
-        
+        cmsghdrPtr.pointee.cmsg_len = .init(
+            NIOBSDSocketControlMessage.length(payloadSize: MemoryLayout.size(ofValue: payload))
+        )
+
         let dataPointer = NIOBSDSocketControlMessage.data(for: cmsghdrPtr)!
         precondition(dataPointer.count >= MemoryLayout<PayloadType>.stride)
         dataPointer.storeBytes(of: payload, as: PayloadType.self)
-        
+
         self.writePosition += requiredSize
     }
-    
+
     /// The result is only valid while this is valid.
     var validControlBytes: UnsafeMutableRawBufferPointer {
         if writePosition == 0 {
             return UnsafeMutableRawBufferPointer(start: nil, count: 0)
         }
-        return UnsafeMutableRawBufferPointer(fastRebase: self.controlBytes[0 ..< self.writePosition])
+        return UnsafeMutableRawBufferPointer(rebasing: self.controlBytes[0..<self.writePosition])
     }
-    
+
 }
 
 extension UnsafeOutboundControlBytes {
     /// Add a message describing the explicit congestion state if requested in metadata and valid for this protocol.
     ///  Parameters:
-    ///     - metadata:   Metadata from the addressed envelope which will describe any desired state.
-    ///     - protocolFamily:  The type of protocol to encode for.
-    internal mutating func appendExplicitCongestionState(metadata: AddressedEnvelope<ByteBuffer>.Metadata?,
-                                                         protocolFamily: NIOBSDSocket.ProtocolFamily?) {
+    ///   - metadata:   Metadata from the addressed envelope which will describe any desired state.
+    ///   - protocolFamily:  The type of protocol to encode for.
+    internal mutating func appendExplicitCongestionState(
+        metadata: AddressedEnvelope<ByteBuffer>.Metadata?,
+        protocolFamily: NIOBSDSocket.ProtocolFamily?
+    ) {
         guard let metadata = metadata else { return }
 
         switch protocolFamily {
         case .some(.inet):
-            self.appendControlMessage(level: .init(IPPROTO_IP),
-                                      type: IP_TOS,
-                                      payload: CInt(ecnValue: metadata.ecnState))
+            self.appendControlMessage(
+                level: .init(IPPROTO_IP),
+                type: IP_TOS,
+                payload: CInt(ecnValue: metadata.ecnState)
+            )
         case .some(.inet6):
-            self.appendControlMessage(level: .init(IPPROTO_IPV6),
-                                      type: IPV6_TCLASS,
-                                      payload: CInt(ecnValue: metadata.ecnState))
+            self.appendControlMessage(
+                level: .init(IPPROTO_IPV6),
+                type: IPV6_TCLASS,
+                payload: CInt(ecnValue: metadata.ecnState)
+            )
         default:
             // Nothing to do - if we get here the user is probably making a mistake.
             break

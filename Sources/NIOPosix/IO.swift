@@ -2,7 +2,7 @@
 //
 // This source file is part of the SwiftNIO open source project
 //
-// Copyright (c) 2017-2021 Apple Inc. and the SwiftNIO project authors
+// Copyright (c) 2017-2024 Apple Inc. and the SwiftNIO project authors
 // Licensed under Apache License v2.0
 //
 // See LICENSE.txt for license information
@@ -12,7 +12,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-internal extension IOResult where T: FixedWidthInteger {
+extension IOResult where T: FixedWidthInteger {
     var result: T {
         switch self {
         case .processed(let value):
@@ -24,6 +24,7 @@ internal extension IOResult where T: FixedWidthInteger {
 }
 
 /// An result for an IO operation that was done on a non-blocking resource.
+@usableFromInline
 enum IOResult<T: Equatable>: Equatable {
 
     /// Signals that the IO operation could not be completed as otherwise we would need to block.

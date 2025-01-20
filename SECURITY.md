@@ -4,19 +4,25 @@ This document specifies the security process for the SwiftNIO project.
 
 ## Versions
 
-The SwiftNIO core team will address security vulnerabilities in all SwiftNIO 2.x 
-versions. Since support for some Swift versions was dropped during the lifetime of 
+The SwiftNIO core team will address security vulnerabilities in all SwiftNIO 2.x
+versions. Since support for some Swift versions was dropped during the lifetime of
 SwiftNIO 2, patch releases will be created for the last supported SwiftNIO versions
-that supported older Swift versions. 
-If a hypothetical security vulnerability was introduced in 2.10.0, then SwiftNIO core 
+that supported older Swift versions.
+If a hypothetical security vulnerability was introduced in 2.10.0, then SwiftNIO core
 team would create the following patch releases:
 
 * NIO 2.29. + plus next patch release to address the issue for projects that support
   Swift 5.0 and 5.1
-* NIO 2.39. + plus next patch release to address the issue for projects that support 
+* NIO 2.39. + plus next patch release to address the issue for projects that support
   Swift 5.2 and 5.3
-* mainline + plus next patch release to address the issue for projects that support 
+* NIO 2.42. + plus next patch release to address the issue for projects that support
   Swift 5.4 and later
+* NIO 2.50. + plus next patch release to address the issue for projects that support
+  Swift 5.5.2 and later
+* NIO 2.59. + plus next patch release to address the issue for projects that support
+  Swift 5.6 and later
+* mainline + plus next patch release to address the issue for projects that support
+  Swift 5.7 and later
 
 SwiftNIO 1.x is considered end of life and will not receive any security patches.
 
@@ -58,8 +64,8 @@ with the [details usually included with bug reports][issue-template].
   and the [SSWG][sswg] will announce the vulnerability on the [Swift
   forums][swift-forums-sec].
 
-[issue-template]: https://github.com/apple/swift-nio/blob/main/.github/ISSUE_TEMPLATE.md
+[issue-template]: https://github.com/apple/swift-nio/blob/main/.github/ISSUE_TEMPLATE/bug-report.md
 [sswg]: https://github.com/swift-server/sswg
-[sswg-security]: https://github.com/swift-server/sswg/blob/main/process/incubation.md#security-best-practices
+[sswg-security]: https://www.swift.org/sswg/security/
 [swift-forums-sec]: https://forums.swift.org/c/server/security-updates/
 [mitre]: https://cveform.mitre.org/

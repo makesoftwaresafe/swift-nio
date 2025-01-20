@@ -17,7 +17,7 @@ import NIOCore
 ///
 /// A full HTTP request is made up of a response header encoded by `.head`
 /// and an optional `.body`.
-public struct NIOHTTPServerRequestFull {
+public struct NIOHTTPServerRequestFull: Sendable {
     public var head: HTTPRequestHead
     public var body: ByteBuffer?
 
@@ -33,7 +33,7 @@ extension NIOHTTPServerRequestFull: Equatable {}
 ///
 /// A full HTTP response is made up of a response header encoded by `.head`
 /// and an optional `.body`.
-public struct NIOHTTPClientResponseFull {
+public struct NIOHTTPClientResponseFull: Sendable {
     public var head: HTTPResponseHead
     public var body: ByteBuffer?
 
@@ -69,7 +69,7 @@ public struct NIOHTTPObjectAggregatorError: Error, Equatable {
     public static let unexpectedMessageEnd = NIOHTTPObjectAggregatorError(base: .unexpectedMessageEnd)
 }
 
-public struct NIOHTTPObjectAggregatorEvent: Hashable {
+public struct NIOHTTPObjectAggregatorEvent: Hashable, Sendable {
     private enum Base {
         case httpExpectationFailed
         case httpFrameTooLong
@@ -122,7 +122,6 @@ internal enum AggregatorState {
             throw NIOHTTPObjectAggregatorError.connectionClosed
         }
     }
-
 
     mutating func messageEndReceived() throws {
         switch self {
@@ -190,7 +189,7 @@ public final class NIOHTTPServerRequestAggregator: ChannelInboundHandler, Remova
     private var maxContentLength: Int
     private var closeOnExpectationFailed: Bool
     private var state: AggregatorState
-    
+
     public init(maxContentLength: Int, closeOnExpectationFailed: Bool = false) {
         precondition(maxContentLength >= 0, "maxContentLength must not be negative")
         self.maxContentLength = maxContentLength
@@ -199,7 +198,7 @@ public final class NIOHTTPServerRequestAggregator: ChannelInboundHandler, Remova
     }
 
     public func channelRead(context: ChannelHandlerContext, data: NIOAny) {
-        let msg = self.unwrapInboundIn(data)
+        let msg = Self.unwrapInboundIn(data)
         var serverResponse: HTTPResponseHead? = nil
 
         do {
@@ -225,8 +224,8 @@ public final class NIOHTTPServerRequestAggregator: ChannelInboundHandler, Remova
 
         // Generated a server response to send back
         if let response = serverResponse {
-            context.write(self.wrapOutboundOut(.head(response)), promise: nil)
-            context.writeAndFlush(self.wrapOutboundOut(.end(nil)), promise: nil)
+            context.write(Self.wrapOutboundOut(.head(response)), promise: nil)
+            context.writeAndFlush(Self.wrapOutboundOut(.end(nil)), promise: nil)
             if response.status == .payloadTooLarge {
                 // If indicated content length is too large
                 self.state.handlingOversizeMessage()
@@ -240,7 +239,11 @@ public final class NIOHTTPServerRequestAggregator: ChannelInboundHandler, Remova
         }
     }
 
-    private func beginAggregation(context: ChannelHandlerContext, request: HTTPRequestHead, message: InboundIn) -> HTTPResponseHead? {
+    private func beginAggregation(
+        context: ChannelHandlerContext,
+        request: HTTPRequestHead,
+        message: InboundIn
+    ) -> HTTPResponseHead? {
         self.fullMessageHead = request
         if let contentLength = request.contentLength, contentLength > self.maxContentLength {
             return self.handleOversizeMessage(message: message)
@@ -248,8 +251,12 @@ public final class NIOHTTPServerRequestAggregator: ChannelInboundHandler, Remova
         return nil
     }
 
-    private func aggregate(context: ChannelHandlerContext, content: inout ByteBuffer, message: InboundIn) -> HTTPResponseHead? {
-        if (content.readableBytes > self.maxContentLength - self.buffer.readableBytes) {
+    private func aggregate(
+        context: ChannelHandlerContext,
+        content: inout ByteBuffer,
+        message: InboundIn
+    ) -> HTTPResponseHead? {
+        if content.readableBytes > self.maxContentLength - self.buffer.readableBytes {
             return self.handleOversizeMessage(message: message)
         } else {
             self.buffer.writeBuffer(&content)
@@ -266,8 +273,10 @@ public final class NIOHTTPServerRequestAggregator: ChannelInboundHandler, Remova
                 aggregated.headers.add(contentsOf: headers)
             }
 
-            let fullMessage = NIOHTTPServerRequestFull(head: aggregated,
-                                                    body: self.buffer.readableBytes > 0 ? self.buffer : nil)
+            let fullMessage = NIOHTTPServerRequestFull(
+                head: aggregated,
+                body: self.buffer.readableBytes > 0 ? self.buffer : nil
+            )
             self.fullMessageHead = nil
             self.buffer.clear()
             context.fireChannelRead(NIOAny(fullMessage))
@@ -278,7 +287,8 @@ public final class NIOHTTPServerRequestAggregator: ChannelInboundHandler, Remova
         var payloadTooLargeHead = HTTPResponseHead(
             version: self.fullMessageHead?.version ?? .http1_1,
             status: .payloadTooLarge,
-            headers: HTTPHeaders([("content-length", "0")]))
+            headers: HTTPHeaders([("content-length", "0")])
+        )
 
         switch message {
         case .head(let request):
@@ -300,6 +310,9 @@ public final class NIOHTTPServerRequestAggregator: ChannelInboundHandler, Remova
         self.buffer = context.channel.allocator.buffer(capacity: 0)
     }
 }
+
+@available(*, unavailable)
+extension NIOHTTPServerRequestAggregator: Sendable {}
 
 /// A `ChannelInboundHandler` that handles HTTP chunked `HTTPClientResponsePart`
 /// messages by aggregating individual message chunks into a single
@@ -332,7 +345,7 @@ public final class NIOHTTPClientResponseAggregator: ChannelInboundHandler, Remov
     }
 
     public func channelRead(context: ChannelHandlerContext, data: NIOAny) {
-        let msg = self.unwrapInboundIn(data)
+        let msg = Self.unwrapInboundIn(data)
 
         do {
             switch msg {
@@ -366,7 +379,7 @@ public final class NIOHTTPClientResponseAggregator: ChannelInboundHandler, Remov
     }
 
     private func aggregate(context: ChannelHandlerContext, content: inout ByteBuffer) throws {
-        if (content.readableBytes > self.maxContentLength - self.buffer.readableBytes) {
+        if content.readableBytes > self.maxContentLength - self.buffer.readableBytes {
             self.state.handlingOversizeMessage()
             context.fireUserInboundEventTriggered(NIOHTTPObjectAggregatorEvent.httpFrameTooLong)
             context.fireErrorCaught(NIOHTTPObjectAggregatorError.frameTooLong)
@@ -386,7 +399,8 @@ public final class NIOHTTPClientResponseAggregator: ChannelInboundHandler, Remov
 
             let fullMessage = NIOHTTPClientResponseFull(
                 head: aggregated,
-                body: self.buffer.readableBytes > 0 ? self.buffer : nil)
+                body: self.buffer.readableBytes > 0 ? self.buffer : nil
+            )
             self.fullMessageHead = nil
             self.buffer.clear()
             context.fireChannelRead(NIOAny(fullMessage))
@@ -397,3 +411,6 @@ public final class NIOHTTPClientResponseAggregator: ChannelInboundHandler, Remov
         self.buffer = context.channel.allocator.buffer(capacity: 0)
     }
 }
+
+@available(*, unavailable)
+extension NIOHTTPClientResponseAggregator: Sendable {}

@@ -2,7 +2,7 @@
 //
 // This source file is part of the SwiftNIO open source project
 //
-// Copyright (c) 2017-2021 Apple Inc. and the SwiftNIO project authors
+// Copyright (c) 2017-2024 Apple Inc. and the SwiftNIO project authors
 // Licensed under Apache License v2.0
 //
 // See LICENSE.txt for license information
@@ -12,11 +12,14 @@
 //
 //===----------------------------------------------------------------------===//
 
-import XCTest
+import Atomics
+import NIOConcurrencyHelpers
 import NIOCore
+import XCTest
+
 @testable import NIOEmbedded
 
-class ChannelLifecycleHandler: ChannelInboundHandler {
+final class ChannelLifecycleHandler: ChannelInboundHandler, Sendable {
     public typealias InboundIn = Any
 
     public enum ChannelState {
@@ -26,17 +29,28 @@ class ChannelLifecycleHandler: ChannelInboundHandler {
         case active
     }
 
-    public var currentState: ChannelState
-    public var stateHistory: [ChannelState]
+    public var currentState: ChannelState {
+        get {
+            self._state.withLockedValue { $0.currentState }
+        }
+    }
+    public var stateHistory: [ChannelState] {
+        get {
+            self._state.withLockedValue { $0.stateHistory }
+        }
+    }
+
+    private let _state: NIOLockedValueBox<(currentState: ChannelState, stateHistory: [ChannelState])>
 
     public init() {
-        currentState = .unregistered
-        stateHistory = [.unregistered]
+        self._state = NIOLockedValueBox((currentState: .unregistered, stateHistory: [.unregistered]))
     }
 
     private func updateState(_ state: ChannelState) {
-        currentState = state
-        stateHistory.append(state)
+        self._state.withLockedValue {
+            $0.currentState = state
+            $0.stateHistory.append(state)
+        }
     }
 
     public func channelRegistered(context: ChannelHandlerContext) {
@@ -69,50 +83,56 @@ class ChannelLifecycleHandler: ChannelInboundHandler {
 }
 
 class EmbeddedChannelTest: XCTestCase {
-    
+
     func testSingleHandlerInit() {
         class Handler: ChannelInboundHandler {
             typealias InboundIn = Never
         }
-        
+
         let channel = EmbeddedChannel(handler: Handler())
-        XCTAssertNoThrow(try channel.pipeline.handler(type: Handler.self).wait())
+        XCTAssertNoThrow(try channel.pipeline.handler(type: Handler.self).map { _ in }.wait())
     }
-    
+
     func testSingleHandlerInitNil() {
         class Handler: ChannelInboundHandler {
             typealias InboundIn = Never
         }
-        
+
         let channel = EmbeddedChannel(handler: nil)
-        XCTAssertThrowsError(try channel.pipeline.handler(type: Handler.self).wait()) { e in
+        XCTAssertThrowsError(try channel.pipeline.handler(type: Handler.self).map { _ in }.wait()) { e in
             XCTAssertEqual(e as? ChannelPipelineError, .notFound)
         }
     }
-    
+
     func testMultipleHandlerInit() {
         class Handler: ChannelInboundHandler, RemovableChannelHandler {
             typealias InboundIn = Never
             let identifier: String
-            
+
             init(identifier: String) {
                 self.identifier = identifier
             }
         }
-        
+
         let channel = EmbeddedChannel(
             handlers: [Handler(identifier: "0"), Handler(identifier: "1"), Handler(identifier: "2")]
         )
-        XCTAssertNoThrow(XCTAssertEqual(try channel.pipeline.handler(type: Handler.self).wait().identifier, "0"))
+        XCTAssertNoThrow(
+            XCTAssertEqual(try channel.pipeline.handler(type: Handler.self).map { $0.identifier }.wait(), "0")
+        )
         XCTAssertNoThrow(try channel.pipeline.removeHandler(name: "handler0").wait())
-        
-        XCTAssertNoThrow(XCTAssertEqual(try channel.pipeline.handler(type: Handler.self).wait().identifier, "1"))
+
+        XCTAssertNoThrow(
+            XCTAssertEqual(try channel.pipeline.handler(type: Handler.self).map { $0.identifier }.wait(), "1")
+        )
         XCTAssertNoThrow(try channel.pipeline.removeHandler(name: "handler1").wait())
-        
-        XCTAssertNoThrow(XCTAssertEqual(try channel.pipeline.handler(type: Handler.self).wait().identifier, "2"))
+
+        XCTAssertNoThrow(
+            XCTAssertEqual(try channel.pipeline.handler(type: Handler.self).map { $0.identifier }.wait(), "2")
+        )
         XCTAssertNoThrow(try channel.pipeline.removeHandler(name: "handler2").wait())
     }
-    
+
     func testWriteOutboundByteBuffer() throws {
         let channel = EmbeddedChannel()
         var buf = channel.allocator.buffer(capacity: 1024)
@@ -179,7 +199,7 @@ class EmbeddedChannelTest: XCTestCase {
 
     func testWriteInboundByteBufferReThrow() {
         let channel = EmbeddedChannel()
-        XCTAssertNoThrow(try channel.pipeline.addHandler(ExceptionThrowingInboundHandler()).wait())
+        XCTAssertNoThrow(try channel.pipeline.syncOperations.addHandler(ExceptionThrowingInboundHandler()))
         XCTAssertThrowsError(try channel.writeInbound("msg")) { error in
             XCTAssertEqual(ChannelError.operationUnsupported, error as? ChannelError)
         }
@@ -188,7 +208,7 @@ class EmbeddedChannelTest: XCTestCase {
 
     func testWriteOutboundByteBufferReThrow() {
         let channel = EmbeddedChannel()
-        XCTAssertNoThrow(try channel.pipeline.addHandler(ExceptionThrowingOutboundHandler()).wait())
+        XCTAssertNoThrow(try channel.pipeline.syncOperations.addHandler(ExceptionThrowingOutboundHandler()))
         XCTAssertThrowsError(try channel.writeOutbound("msg")) { error in
             XCTAssertEqual(ChannelError.operationUnsupported, error as? ChannelError)
         }
@@ -231,7 +251,7 @@ class EmbeddedChannelTest: XCTestCase {
 
         let buffer = channel.allocator.buffer(capacity: 0)
         let ioData = IOData.byteBuffer(buffer)
-        let fileHandle = NIOFileHandle(descriptor: -1)
+        let fileHandle = NIOFileHandle(_deprecatedTakingOwnershipOfDescriptor: -1)
         let fileRegion = FileRegion(fileHandle: fileHandle, readerIndex: 0, endIndex: 0)
         defer {
             XCTAssertNoThrow(_ = try fileHandle.takeDescriptorOwnership())
@@ -241,29 +261,40 @@ class EmbeddedChannelTest: XCTestCase {
         XCTAssertTrue(try channel.writeOutbound(ioData).isFull)
         XCTAssertTrue(try channel.writeOutbound(fileHandle).isFull)
         XCTAssertTrue(try channel.writeOutbound(fileRegion).isFull)
-        XCTAssertTrue(try channel.writeOutbound(
-            AddressedEnvelope<ByteBuffer>(remoteAddress: SocketAddress(ipAddress: "1.2.3.4", port: 5678),
-                                          data: buffer)).isFull)
+        XCTAssertTrue(
+            try channel.writeOutbound(
+                AddressedEnvelope<ByteBuffer>(
+                    remoteAddress: SocketAddress(ipAddress: "1.2.3.4", port: 5678),
+                    data: buffer
+                )
+            ).isFull
+        )
         XCTAssertTrue(try channel.writeOutbound(buffer).isFull)
         XCTAssertTrue(try channel.writeOutbound(ioData).isFull)
         XCTAssertTrue(try channel.writeOutbound(fileRegion).isFull)
-
 
         XCTAssertTrue(try channel.writeInbound(buffer).isFull)
         XCTAssertTrue(try channel.writeInbound(ioData).isFull)
         XCTAssertTrue(try channel.writeInbound(fileHandle).isFull)
         XCTAssertTrue(try channel.writeInbound(fileRegion).isFull)
-        XCTAssertTrue(try channel.writeInbound(
-            AddressedEnvelope<ByteBuffer>(remoteAddress: SocketAddress(ipAddress: "1.2.3.4", port: 5678),
-                                          data: buffer)).isFull)
+        XCTAssertTrue(
+            try channel.writeInbound(
+                AddressedEnvelope<ByteBuffer>(
+                    remoteAddress: SocketAddress(ipAddress: "1.2.3.4", port: 5678),
+                    data: buffer
+                )
+            ).isFull
+        )
         XCTAssertTrue(try channel.writeInbound(buffer).isFull)
         XCTAssertTrue(try channel.writeInbound(ioData).isFull)
         XCTAssertTrue(try channel.writeInbound(fileRegion).isFull)
 
-        func check<Expected, Actual>(expected: Expected.Type,
-                                     actual: Actual.Type,
-                                     file: StaticString = #file,
-                                     line: UInt = #line) {
+        func check<Expected, Actual>(
+            expected: Expected.Type,
+            actual: Actual.Type,
+            file: StaticString = #filePath,
+            line: UInt = #line
+        ) {
             do {
                 _ = try channel.readOutbound(as: Expected.self)
                 XCTFail("this should have failed", file: (file), line: line)
@@ -311,7 +342,7 @@ class EmbeddedChannelTest: XCTestCase {
     func testCloseOnInactiveIsOk() throws {
         let channel = EmbeddedChannel()
         let inactiveHandler = CloseInChannelInactiveHandler()
-        XCTAssertNoThrow(try channel.pipeline.addHandler(inactiveHandler).wait())
+        XCTAssertNoThrow(try channel.pipeline.syncOperations.addHandler(inactiveHandler))
         XCTAssertTrue(try channel.finish().isClean)
 
         // channelInactive should fire only once.
@@ -336,7 +367,7 @@ class EmbeddedChannelTest: XCTestCase {
         XCTAssertFalse(channel.isActive)
     }
 
-    private final class ExceptionThrowingInboundHandler : ChannelInboundHandler {
+    private final class ExceptionThrowingInboundHandler: ChannelInboundHandler {
         typealias InboundIn = String
 
         public func channelRead(context: ChannelHandlerContext, data: NIOAny) {
@@ -344,7 +375,7 @@ class EmbeddedChannelTest: XCTestCase {
         }
     }
 
-    private final class ExceptionThrowingOutboundHandler : ChannelOutboundHandler {
+    private final class ExceptionThrowingOutboundHandler: ChannelOutboundHandler {
         typealias OutboundIn = String
         typealias OutboundOut = Never
 
@@ -375,7 +406,7 @@ class EmbeddedChannelTest: XCTestCase {
         let channel = EmbeddedChannel()
         let buffer = ByteBufferAllocator().buffer(capacity: 5)
         let socketAddress = try SocketAddress(unixDomainSocketPath: "path")
-        let handle = NIOFileHandle(descriptor: 1)
+        let handle = NIOFileHandle(_deprecatedTakingOwnershipOfDescriptor: 1)
         let fileRegion = FileRegion(fileHandle: handle, readerIndex: 1, endIndex: 2)
         defer {
             // fake descriptor, so shouldn't be closed.
@@ -384,8 +415,8 @@ class EmbeddedChannelTest: XCTestCase {
         try channel.writeAndFlush(1).wait()
         try channel.writeAndFlush("1").wait()
         try channel.writeAndFlush(buffer).wait()
-        try channel.writeAndFlush(IOData.byteBuffer(buffer)).wait()
-        try channel.writeAndFlush(IOData.fileRegion(fileRegion)).wait()
+        try channel.writeOutbound(IOData.byteBuffer(buffer))
+        try channel.writeOutbound(IOData.fileRegion(fileRegion))
         try channel.writeAndFlush(AddressedEnvelope(remoteAddress: socketAddress, data: buffer)).wait()
     }
 
@@ -466,27 +497,185 @@ class EmbeddedChannelTest: XCTestCase {
 
     func testFinishWithRecursivelyScheduledTasks() throws {
         let channel = EmbeddedChannel()
-        var invocations = 0
+        let tasks: NIOLoopBoundBox<[Scheduled<Void>]> = NIOLoopBoundBox([], eventLoop: channel.eventLoop)
+        let invocations = ManagedAtomic(0)
 
+        @Sendable
         func recursivelyScheduleAndIncrement() {
-            channel.pipeline.eventLoop.scheduleTask(deadline: .distantFuture) {
-                invocations += 1
+            let task = channel.pipeline.eventLoop.scheduleTask(deadline: .distantFuture) {
+                invocations.wrappingIncrement(ordering: .sequentiallyConsistent)
                 recursivelyScheduleAndIncrement()
             }
+            tasks.value.append(task)
         }
 
         recursivelyScheduleAndIncrement()
 
         try XCTAssertNoThrow(channel.finish())
-        XCTAssertEqual(invocations, 1)
+
+        // None of the tasks should have been executed, they were scheduled for distant future.
+        XCTAssertEqual(invocations.load(ordering: .sequentiallyConsistent), 0)
+
+        // Because the root task didn't run, it should be the onnly one scheduled.
+        XCTAssertEqual(tasks.value.count, 1)
+
+        // Check the task was failed with cancelled error.
+        let taskChecked = expectation(description: "task future fulfilled")
+        tasks.value.first?.futureResult.whenComplete { result in
+            switch result {
+            case .success: XCTFail("Expected task to be cancelled, not run.")
+            case .failure(let error): XCTAssertEqual(error as? EventLoopError, .cancelled)
+            }
+            taskChecked.fulfill()
+        }
+        wait(for: [taskChecked], timeout: 0)
     }
 
-    func testSyncOptionsAreSupported() throws {
+    func testGetChannelOptionAutoReadIsSupported() {
         let channel = EmbeddedChannel()
         let options = channel.syncOptions
         XCTAssertNotNil(options)
         // Unconditionally returns true.
-        XCTAssertEqual(try options?.getOption(ChannelOptions.autoRead), true)
-        // (Setting options isn't supported.)
+        XCTAssertEqual(try options?.getOption(.autoRead), true)
+    }
+
+    func testSetGetChannelOptionAllowRemoteHalfClosureIsSupported() {
+        let channel = EmbeddedChannel()
+        let options = channel.syncOptions
+        XCTAssertNotNil(options)
+
+        // allowRemoteHalfClosure should be false by default
+        XCTAssertEqual(try options?.getOption(.allowRemoteHalfClosure), false)
+
+        channel.allowRemoteHalfClosure = true
+        XCTAssertEqual(try options?.getOption(.allowRemoteHalfClosure), true)
+
+        XCTAssertNoThrow(try options?.setOption(.allowRemoteHalfClosure, value: false))
+        XCTAssertEqual(try options?.getOption(.allowRemoteHalfClosure), false)
+    }
+
+    func testLocalAddress0() throws {
+        let channel = EmbeddedChannel()
+
+        XCTAssertThrowsError(try channel._channelCore.localAddress0()) { error in
+            XCTAssertEqual(error as? ChannelError, ChannelError.operationUnsupported)
+        }
+
+        let localAddress = try SocketAddress(ipAddress: "127.0.0.1", port: 1234)
+        channel.localAddress = localAddress
+
+        XCTAssertEqual(try channel._channelCore.localAddress0(), localAddress)
+    }
+
+    func testRemoteAddress0() throws {
+        let channel = EmbeddedChannel()
+
+        XCTAssertThrowsError(try channel._channelCore.remoteAddress0()) { error in
+            XCTAssertEqual(error as? ChannelError, ChannelError.operationUnsupported)
+        }
+
+        let remoteAddress = try SocketAddress(ipAddress: "127.0.0.1", port: 1234)
+        channel.remoteAddress = remoteAddress
+
+        XCTAssertEqual(try channel._channelCore.remoteAddress0(), remoteAddress)
+    }
+
+    func testWriteOutboundEmptyBufferedByte() throws {
+        let channel = EmbeddedChannel()
+        var buffered = try channel.getOption(ChannelOptions.bufferedWritableBytes).wait()
+        XCTAssertEqual(0, buffered)
+
+        let buf = channel.allocator.buffer(capacity: 10)
+
+        channel.write(buf, promise: nil)
+        buffered = try channel.getOption(ChannelOptions.bufferedWritableBytes).wait()
+        XCTAssertEqual(0, buffered)
+
+        channel.flush()
+        buffered = try channel.getOption(ChannelOptions.bufferedWritableBytes).wait()
+        XCTAssertEqual(0, buffered)
+        XCTAssertNoThrow(XCTAssertEqual(buf, try channel.readOutbound()))
+        XCTAssertNoThrow(XCTAssertTrue(try channel.finish().isClean))
+    }
+
+    func testWriteOutboundBufferedByteSingleWrite() throws {
+        let channel = EmbeddedChannel()
+        var buf = channel.allocator.buffer(capacity: 10)
+        buf.writeString("hello")
+
+        channel.write(buf, promise: nil)
+        var buffered = try channel.getOption(ChannelOptions.bufferedWritableBytes).wait()
+        XCTAssertEqual(buf.readableBytes, buffered)
+        channel.flush()
+
+        buffered = try channel.getOption(ChannelOptions.bufferedWritableBytes).wait()
+        XCTAssertEqual(0, buffered)
+        XCTAssertNoThrow(XCTAssertEqual(buf, try channel.readOutbound()))
+        XCTAssertNoThrow(XCTAssertTrue(try channel.finish().isClean))
+    }
+
+    func testWriteOuboundBufferedBytesMultipleWrites() throws {
+        let channel = EmbeddedChannel()
+        var buf = channel.allocator.buffer(capacity: 10)
+        buf.writeString("hello")
+        let totalCount = 5
+        for _ in 0..<totalCount {
+            channel.write(buf, promise: nil)
+        }
+
+        var buffered = try channel.getOption(ChannelOptions.bufferedWritableBytes).wait()
+        XCTAssertEqual(buf.readableBytes * totalCount, buffered)
+
+        channel.flush()
+        buffered = try channel.getOption(ChannelOptions.bufferedWritableBytes).wait()
+        XCTAssertEqual(0, buffered)
+        for _ in 0..<totalCount {
+            XCTAssertNoThrow(XCTAssertEqual(buf, try channel.readOutbound()))
+        }
+
+        XCTAssertNoThrow(XCTAssertTrue(try channel.finish().isClean))
+    }
+
+    func testWriteOuboundBufferedBytesWriteAndFlushInterleaved() throws {
+        let channel = EmbeddedChannel()
+        var buf = channel.allocator.buffer(capacity: 10)
+        buf.writeString("hello")
+
+        channel.write(buf, promise: nil)
+        channel.write(buf, promise: nil)
+        channel.write(buf, promise: nil)
+        var buffered = try channel.getOption(ChannelOptions.bufferedWritableBytes).wait()
+        XCTAssertEqual(buf.readableBytes * 3, buffered)
+
+        channel.flush()
+        buffered = try channel.getOption(ChannelOptions.bufferedWritableBytes).wait()
+        XCTAssertEqual(0, buffered)
+
+        channel.write(buf, promise: nil)
+        channel.write(buf, promise: nil)
+        buffered = try channel.getOption(ChannelOptions.bufferedWritableBytes).wait()
+        XCTAssertEqual(buf.readableBytes * 2, buffered)
+        channel.flush()
+        buffered = try channel.getOption(ChannelOptions.bufferedWritableBytes).wait()
+        XCTAssertEqual(0, buffered)
+
+        for _ in 0..<5 {
+            XCTAssertNoThrow(XCTAssertEqual(buf, try channel.readOutbound()))
+        }
+
+        XCTAssertNoThrow(XCTAssertTrue(try channel.finish().isClean))
+    }
+
+    func testWriteOutboundBufferedBytesWriteAndFlush() throws {
+        let channel = EmbeddedChannel()
+        var buf = channel.allocator.buffer(capacity: 10)
+        buf.writeString("hello")
+
+        try XCTAssertTrue(channel.writeOutbound(buf).isFull)
+        let buffered = try channel.getOption(.bufferedWritableBytes).wait()
+        XCTAssertEqual(0, buffered)
+
+        XCTAssertEqual(buf, try channel.readOutbound(as: ByteBuffer.self))
+        XCTAssertTrue(try channel.finish().isClean)
     }
 }

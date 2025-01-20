@@ -2,7 +2,7 @@
 //
 // This source file is part of the SwiftNIO open source project
 //
-// Copyright (c) 2020-2021 Apple Inc. and the SwiftNIO project authors
+// Copyright (c) 2020-2024 Apple Inc. and the SwiftNIO project authors
 // Licensed under Apache License v2.0
 //
 // See LICENSE.txt for license information
@@ -12,11 +12,16 @@
 //
 //===----------------------------------------------------------------------===//
 
-import XCTest
-@testable import NIOPosix
+import Atomics
 import Dispatch
 import NIOConcurrencyHelpers
+import NIOCore
+import NIOEmbedded
+import XCTest
 
+@testable import NIOPosix
+
+@available(macOS 10.15, iOS 13, tvOS 13, watchOS 6, *)
 class NIOThreadPoolTest: XCTestCase {
     func testThreadNamesAreSetUp() {
         let numberOfThreads = 11
@@ -27,7 +32,7 @@ class NIOThreadPoolTest: XCTestCase {
         }
 
         var allThreadNames: Set<String> = []
-        let lock = Lock()
+        let lock = NIOLock()
         let threadNameCollectionSem = DispatchSemaphore(value: 0)
         let threadBlockingSem = DispatchSemaphore(value: 0)
 
@@ -48,11 +53,11 @@ class NIOThreadPoolTest: XCTestCase {
         }
 
         // now, let's wait for all the threads to have done their work
-        (0..<numberOfThreads).forEach { _ in
+        for _ in (0..<numberOfThreads) {
             threadNameCollectionSem.wait()
         }
         // and finally, let them exit
-        (0..<numberOfThreads).forEach { _ in
+        for _ in (0..<numberOfThreads) {
             threadBlockingSem.signal()
         }
 
@@ -74,16 +79,15 @@ class NIOThreadPoolTest: XCTestCase {
 
         // The lock here is arguably redundant with the dispatchgroup, but let's make
         // this test thread-safe even if I screw up.
-        let lock = Lock()
-        var threadOne = Thread?.none
-        var threadTwo = Thread?.none
+        let threadOne: NIOLockedValueBox<NIOThread?> = NIOLockedValueBox(NIOThread?.none)
+        let threadTwo: NIOLockedValueBox<NIOThread?> = NIOLockedValueBox(NIOThread?.none)
 
         completionGroup.enter()
         pool.submit { s in
             precondition(s == .active)
-            lock.withLockVoid {
+            threadOne.withLockedValue { threadOne in
                 XCTAssertEqual(threadOne, nil)
-                threadOne = Thread.current
+                threadOne = NIOThread.current
             }
             completionGroup.leave()
         }
@@ -93,19 +97,98 @@ class NIOThreadPoolTest: XCTestCase {
         completionGroup.enter()
         pool.submit { s in
             precondition(s == .active)
-            lock.withLockVoid {
+            threadTwo.withLockedValue { threadTwo in
                 XCTAssertEqual(threadTwo, nil)
-                threadTwo = Thread.current
+                threadTwo = NIOThread.current
             }
             completionGroup.leave()
         }
 
         completionGroup.wait()
 
-        lock.withLockVoid {
-            XCTAssertNotNil(threadOne)
-            XCTAssertNotNil(threadTwo)
-            XCTAssertEqual(threadOne, threadTwo)
+        XCTAssertNotNil(threadOne.withLockedValue { $0 })
+        XCTAssertNotNil(threadTwo.withLockedValue { $0 })
+        XCTAssertEqual(threadOne.withLockedValue { $0 }, threadTwo.withLockedValue { $0 })
+    }
+
+    func testAsyncThreadPool() async throws {
+        let numberOfThreads = 1
+        let pool = NIOThreadPool(numberOfThreads: numberOfThreads)
+        pool.start()
+        do {
+            let hitCount = ManagedAtomic(false)
+            try await pool.runIfActive {
+                hitCount.store(true, ordering: .relaxed)
+            }
+            XCTAssertEqual(hitCount.load(ordering: .relaxed), true)
+        } catch {}
+        try await pool.shutdownGracefully()
+    }
+
+    func testAsyncThreadPoolErrorPropagation() async throws {
+        struct ThreadPoolError: Error {}
+        let numberOfThreads = 1
+        let pool = NIOThreadPool(numberOfThreads: numberOfThreads)
+        pool.start()
+        do {
+            try await pool.runIfActive {
+                throw ThreadPoolError()
+            }
+            XCTFail("Should not get here as closure sent to runIfActive threw an error")
+        } catch {
+            XCTAssertNotNil(error as? ThreadPoolError, "Error thrown should be of type ThreadPoolError")
         }
+        try await pool.shutdownGracefully()
+    }
+
+    func testAsyncThreadPoolNotActiveError() async throws {
+        struct ThreadPoolError: Error {}
+        let numberOfThreads = 1
+        let pool = NIOThreadPool(numberOfThreads: numberOfThreads)
+        do {
+            try await pool.runIfActive {
+                throw ThreadPoolError()
+            }
+            XCTFail("Should not get here as thread pool isn't active")
+        } catch {
+            XCTAssertNotNil(error as? CancellationError, "Error thrown should be of type CancellationError")
+        }
+        try await pool.shutdownGracefully()
+    }
+
+    func testAsyncThreadPoolCancellation() async throws {
+        let pool = NIOThreadPool(numberOfThreads: 1)
+        pool.start()
+
+        await withThrowingTaskGroup(of: Void.self) { group in
+            group.cancelAll()
+            group.addTask {
+                try await pool.runIfActive {
+                    XCTFail("Should be cancelled before executed")
+                }
+            }
+
+            do {
+                try await group.waitForAll()
+                XCTFail("Expected CancellationError to be thrown")
+            } catch {
+                XCTAssert(error is CancellationError)
+            }
+        }
+
+        try await pool.shutdownGracefully()
+    }
+
+    func testAsyncShutdownWorks() async throws {
+        let threadPool = NIOThreadPool(numberOfThreads: 17)
+        let eventLoop = NIOAsyncTestingEventLoop()
+
+        threadPool.start()
+        try await threadPool.shutdownGracefully()
+
+        let future = threadPool.runIfActive(eventLoop: eventLoop) {
+            XCTFail("This shouldn't run because the pool is shutdown.")
+        }
+        await XCTAssertThrowsError { try await future.get() }
     }
 }

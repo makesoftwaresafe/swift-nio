@@ -18,13 +18,17 @@ public enum ByteToMessageDecoderVerifier {
     /// - seealso: verifyDecoder(inputOutputPairs:decoderFactory:)
     ///
     /// Verify `ByteToMessageDecoder`s with `String` inputs
-    public static func verifyDecoder<Decoder: ByteToMessageDecoder>(stringInputOutputPairs: [(String, [Decoder.InboundOut])],
-                                                                    decoderFactory: @escaping () -> Decoder) throws where Decoder.InboundOut: Equatable {
+    public static func verifyDecoder<Decoder: ByteToMessageDecoder>(
+        stringInputOutputPairs: [(String, [Decoder.InboundOut])],
+        decoderFactory: () -> Decoder
+    ) throws where Decoder.InboundOut: Equatable {
         let alloc = ByteBufferAllocator()
-        let ioPairs = stringInputOutputPairs.map { (ioPair: (String, [Decoder.InboundOut])) -> (ByteBuffer, [Decoder.InboundOut]) in
-            return (alloc.buffer(string: ioPair.0), ioPair.1)
+        let ioPairs = stringInputOutputPairs.map {
+            (ioPair: (String, [Decoder.InboundOut])) -> (ByteBuffer, [Decoder.InboundOut]) in
+            (alloc.buffer(string: ioPair.0), ioPair.1)
         }
-        return try ByteToMessageDecoderVerifier.verifyDecoder(inputOutputPairs: ioPairs, decoderFactory: decoderFactory)
+
+        try ByteToMessageDecoderVerifier.verifyDecoder(inputOutputPairs: ioPairs, decoderFactory: decoderFactory)
     }
 
     /// Verifies a `ByteToMessageDecoder` by performing a number of tests.
@@ -50,8 +54,10 @@ public enum ByteToMessageDecoderVerifier {
     ///                          ]
     ///     XCTAssertNoThrow(try ByteToMessageDecoderVerifier.verifyDecoder(inputOutputPairs: expectedInOuts,
     ///                                                                     decoderFactory: { ExampleDecoder() }))
-    public static func verifyDecoder<Decoder: ByteToMessageDecoder>(inputOutputPairs: [(ByteBuffer, [Decoder.InboundOut])],
-                                                                    decoderFactory: @escaping () -> Decoder) throws where Decoder.InboundOut: Equatable {
+    public static func verifyDecoder<Decoder: ByteToMessageDecoder>(
+        inputOutputPairs: [(ByteBuffer, [Decoder.InboundOut])],
+        decoderFactory: () -> Decoder
+    ) throws where Decoder.InboundOut: Equatable {
         typealias Out = Decoder.InboundOut
 
         func verifySimple(channel: RecordingChannel) throws {
@@ -59,19 +65,27 @@ public enum ByteToMessageDecoderVerifier {
                 try channel.writeInbound(input)
                 for expectedOutput in expectedOutputs {
                     guard let actualOutput = try channel.readInbound(as: Out.self) else {
-                        throw VerificationError<Out>(inputs: channel.inboundWrites,
-                                                     errorCode: .underProduction(expectedOutput))
+                        throw VerificationError<Out>(
+                            inputs: channel.inboundWrites,
+                            errorCode: .underProduction(expectedOutput)
+                        )
                     }
                     guard actualOutput == expectedOutput else {
-                        throw VerificationError<Out>(inputs: channel.inboundWrites,
-                                                     errorCode: .wrongProduction(actual: actualOutput,
-                                                                                     expected: expectedOutput))
+                        throw VerificationError<Out>(
+                            inputs: channel.inboundWrites,
+                            errorCode: .wrongProduction(
+                                actual: actualOutput,
+                                expected: expectedOutput
+                            )
+                        )
                     }
                 }
                 let actualExtraOutput = try channel.readInbound(as: Out.self)
                 guard actualExtraOutput == nil else {
-                    throw VerificationError<Out>(inputs: channel.inboundWrites,
-                                                 errorCode: .overProduction(actualExtraOutput!))
+                    throw VerificationError<Out>(
+                        inputs: channel.inboundWrites,
+                        errorCode: .overProduction(actualExtraOutput!)
+                    )
                 }
             }
         }
@@ -90,19 +104,27 @@ public enum ByteToMessageDecoderVerifier {
                     }
                     for expectedOutput in expectedOutputs {
                         guard let actualOutput = try channel.readInbound(as: Out.self) else {
-                            throw VerificationError<Out>(inputs: channel.inboundWrites,
-                                                         errorCode: .underProduction(expectedOutput))
+                            throw VerificationError<Out>(
+                                inputs: channel.inboundWrites,
+                                errorCode: .underProduction(expectedOutput)
+                            )
                         }
                         guard actualOutput == expectedOutput else {
-                            throw VerificationError<Out>(inputs: channel.inboundWrites,
-                                                         errorCode: .wrongProduction(actual: actualOutput,
-                                                                                         expected: expectedOutput))
+                            throw VerificationError<Out>(
+                                inputs: channel.inboundWrites,
+                                errorCode: .wrongProduction(
+                                    actual: actualOutput,
+                                    expected: expectedOutput
+                                )
+                            )
                         }
                     }
                     let actualExtraOutput = try channel.readInbound(as: Out.self)
                     guard actualExtraOutput == nil else {
-                        throw VerificationError<Out>(inputs: channel.inboundWrites,
-                                                     errorCode: .overProduction(actualExtraOutput!))
+                        throw VerificationError<Out>(
+                            inputs: channel.inboundWrites,
+                            errorCode: .overProduction(actualExtraOutput!)
+                        )
                     }
                 }
             }
@@ -122,13 +144,19 @@ public enum ByteToMessageDecoderVerifier {
             try channel.writeInbound(overallBuffer)
             for expectedOutput in overallExpecteds {
                 guard let actualOutput = try channel.readInbound(as: Out.self) else {
-                    throw VerificationError<Out>(inputs: channel.inboundWrites,
-                                                 errorCode: .underProduction(expectedOutput))
+                    throw VerificationError<Out>(
+                        inputs: channel.inboundWrites,
+                        errorCode: .underProduction(expectedOutput)
+                    )
                 }
                 guard actualOutput == expectedOutput else {
-                    throw VerificationError<Out>(inputs: channel.inboundWrites,
-                                                 errorCode: .wrongProduction(actual: actualOutput,
-                                                                                 expected: expectedOutput))
+                    throw VerificationError<Out>(
+                        inputs: channel.inboundWrites,
+                        errorCode: .wrongProduction(
+                            actual: actualOutput,
+                            expected: expectedOutput
+                        )
+                    )
                 }
             }
         }
@@ -141,10 +169,14 @@ public enum ByteToMessageDecoderVerifier {
         try verifyManyAtOnce(channel: channel)
 
         if case .leftOvers(inbound: let ib, outbound: let ob, pendingOutbound: let pob) = try channel.finish() {
-            throw VerificationError<Out>(inputs: channel.inboundWrites,
-                                         errorCode: .leftOversOnDeconstructingChannel(inbound: ib,
-                                                                                      outbound: ob,
-                                                                                      pendingOutbound: pob))
+            throw VerificationError<Out>(
+                inputs: channel.inboundWrites,
+                errorCode: .leftOversOnDeconstructingChannel(
+                    inbound: ib,
+                    outbound: ob,
+                    pendingOutbound: pob
+                )
+            )
         }
     }
 }
@@ -159,7 +191,7 @@ extension ByteToMessageDecoderVerifier {
         }
 
         func readInbound<T>(as type: T.Type = T.self) throws -> T? {
-            return try self.actualChannel.readInbound()
+            try self.actualChannel.readInbound()
         }
 
         @discardableResult public func writeInbound(_ data: ByteBuffer) throws -> EmbeddedChannel.BufferState {
@@ -168,11 +200,11 @@ extension ByteToMessageDecoderVerifier {
         }
 
         var allocator: ByteBufferAllocator {
-            return self.actualChannel.allocator
+            self.actualChannel.allocator
         }
 
         func finish() throws -> EmbeddedChannel.LeftOverState {
-            return try self.actualChannel.finish()
+            try self.actualChannel.finish()
         }
     }
 }
@@ -207,3 +239,14 @@ extension ByteToMessageDecoderVerifier {
         }
     }
 }
+
+/// `VerificationError` conforms to `Error` and therefore needs to conform to `Sendable` too.
+/// `VerificationError` has a stored property `errorCode` of type `ErrorCode` which can store `NIOAny` which is not and can not be `Sendable`.
+/// In addtion, `ErrorCode` can also store a user defined `OutputType` which is not required to be `Sendable` but we could require it to be `Sendable`.
+/// We have two choices:
+///  - we could lie and conform `ErrorCode` to `Sendable` with `@unchecked`
+///  - do the same but for `VerificationError`
+/// As `VerificationError` already conforms to `Sendable` (because it conforms to `Error` and `Error` inherits from `Sendable`)
+/// it sound like the best option to just stick to the conformances we already have and **not** lie twice by making `VerificationError` conform to `Sendable` too.
+/// Note that this still allows us to adopt `Sendable` for `ErrorCode` later if we change our opinion.
+extension ByteToMessageDecoderVerifier.VerificationError: @unchecked Sendable {}

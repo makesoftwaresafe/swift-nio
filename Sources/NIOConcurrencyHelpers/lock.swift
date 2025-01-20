@@ -12,13 +12,24 @@
 //
 //===----------------------------------------------------------------------===//
 
-#if os(macOS) || os(iOS) || os(watchOS) || os(tvOS)
+#if canImport(Darwin)
 import Darwin
 #elseif os(Windows)
 import ucrt
 import WinSDK
-#else
+#elseif canImport(Glibc)
 import Glibc
+#elseif canImport(Musl)
+import Musl
+#elseif canImport(Bionic)
+import Bionic
+#elseif canImport(WASILibc)
+import WASILibc
+#if canImport(wasi_pthread)
+import wasi_pthread
+#endif
+#else
+#error("The concurrency lock module was unable to identify your C library.")
 #endif
 
 /// A threading lock based on `libpthread` instead of `libdispatch`.
@@ -27,20 +38,21 @@ import Glibc
 /// of lock is safe to use with `libpthread`-based threading models, such as the
 /// one used by NIO. On Windows, the lock is based on the substantially similar
 /// `SRWLOCK` type.
+@available(*, deprecated, renamed: "NIOLock")
 public final class Lock {
-#if os(Windows)
+    #if os(Windows)
     fileprivate let mutex: UnsafeMutablePointer<SRWLOCK> =
         UnsafeMutablePointer.allocate(capacity: 1)
-#else
+    #else
     fileprivate let mutex: UnsafeMutablePointer<pthread_mutex_t> =
         UnsafeMutablePointer.allocate(capacity: 1)
-#endif
+    #endif
 
     /// Create a new lock.
     public init() {
-#if os(Windows)
+        #if os(Windows)
         InitializeSRWLock(self.mutex)
-#else
+        #elseif (compiler(<6.1) && !os(WASI)) || (compiler(>=6.1) && _runtime(_multithreaded))
         var attr = pthread_mutexattr_t()
         pthread_mutexattr_init(&attr)
         debugOnly {
@@ -49,16 +61,16 @@ public final class Lock {
 
         let err = pthread_mutex_init(self.mutex, &attr)
         precondition(err == 0, "\(#function) failed in pthread_mutex with error \(err)")
-#endif
+        #endif
     }
 
     deinit {
-#if os(Windows)
+        #if os(Windows)
         // SRWLOCK does not need to be free'd
-#else
+        #elseif (compiler(<6.1) && !os(WASI)) || (compiler(>=6.1) && _runtime(_multithreaded))
         let err = pthread_mutex_destroy(self.mutex)
         precondition(err == 0, "\(#function) failed in pthread_mutex with error \(err)")
-#endif
+        #endif
         mutex.deallocate()
     }
 
@@ -67,12 +79,12 @@ public final class Lock {
     /// Whenever possible, consider using `withLock` instead of this method and
     /// `unlock`, to simplify lock handling.
     public func lock() {
-#if os(Windows)
+        #if os(Windows)
         AcquireSRWLockExclusive(self.mutex)
-#else
+        #elseif (compiler(<6.1) && !os(WASI)) || (compiler(>=6.1) && _runtime(_multithreaded))
         let err = pthread_mutex_lock(self.mutex)
         precondition(err == 0, "\(#function) failed in pthread_mutex with error \(err)")
-#endif
+        #endif
     }
 
     /// Release the lock.
@@ -80,16 +92,14 @@ public final class Lock {
     /// Whenever possible, consider using `withLock` instead of this method and
     /// `lock`, to simplify lock handling.
     public func unlock() {
-#if os(Windows)
+        #if os(Windows)
         ReleaseSRWLockExclusive(self.mutex)
-#else
+        #elseif (compiler(<6.1) && !os(WASI)) || (compiler(>=6.1) && _runtime(_multithreaded))
         let err = pthread_mutex_unlock(self.mutex)
         precondition(err == 0, "\(#function) failed in pthread_mutex with error \(err)")
-#endif
+        #endif
     }
-}
 
-extension Lock {
     /// Acquire the lock for the duration of the given block.
     ///
     /// This convenience method should be preferred to `lock` and `unlock` in
@@ -109,7 +119,7 @@ extension Lock {
 
     // specialise Void return (for performance)
     @inlinable
-    public func withLockVoid(_ body: () throws -> Void) rethrows -> Void {
+    public func withLockVoid(_ body: () throws -> Void) rethrows {
         try self.withLock(body)
     }
 }
@@ -120,37 +130,37 @@ extension Lock {
 /// until the state variable is set to a specific value to acquire the lock.
 public final class ConditionLock<T: Equatable> {
     private var _value: T
-    private let mutex: Lock
-#if os(Windows)
+    private let mutex: NIOLock
+    #if os(Windows)
     private let cond: UnsafeMutablePointer<CONDITION_VARIABLE> =
         UnsafeMutablePointer.allocate(capacity: 1)
-#else
+    #elseif (compiler(<6.1) && !os(WASI)) || (compiler(>=6.1) && _runtime(_multithreaded))
     private let cond: UnsafeMutablePointer<pthread_cond_t> =
         UnsafeMutablePointer.allocate(capacity: 1)
-#endif
+    #endif
 
     /// Create the lock, and initialize the state variable to `value`.
     ///
     /// - Parameter value: The initial value to give the state variable.
     public init(value: T) {
         self._value = value
-        self.mutex = Lock()
-#if os(Windows)
+        self.mutex = NIOLock()
+        #if os(Windows)
         InitializeConditionVariable(self.cond)
-#else
+        #elseif (compiler(<6.1) && !os(WASI)) || (compiler(>=6.1) && _runtime(_multithreaded))
         let err = pthread_cond_init(self.cond, nil)
         precondition(err == 0, "\(#function) failed in pthread_cond with error \(err)")
-#endif
+        #endif
     }
 
     deinit {
-#if os(Windows)
+        #if os(Windows)
         // condition variables do not need to be explicitly destroyed
-#else
+        #elseif (compiler(<6.1) && !os(WASI)) || (compiler(>=6.1) && _runtime(_multithreaded))
         let err = pthread_cond_destroy(self.cond)
         precondition(err == 0, "\(#function) failed in pthread_cond with error \(err)")
-#endif
         self.cond.deallocate()
+        #endif
     }
 
     /// Acquire the lock, regardless of the value of the state variable.
@@ -186,13 +196,15 @@ public final class ConditionLock<T: Equatable> {
             if self._value == wantedValue {
                 break
             }
-#if os(Windows)
-            let result = SleepConditionVariableSRW(self.cond, self.mutex.mutex, INFINITE, 0)
-            precondition(result, "\(#function) failed in SleepConditionVariableSRW with error \(GetLastError())")
-#else
-            let err = pthread_cond_wait(self.cond, self.mutex.mutex)
-            precondition(err == 0, "\(#function) failed in pthread_cond with error \(err)")
-#endif
+            self.mutex.withLockPrimitive { mutex in
+                #if os(Windows)
+                let result = SleepConditionVariableSRW(self.cond, mutex, INFINITE, 0)
+                precondition(result, "\(#function) failed in SleepConditionVariableSRW with error \(GetLastError())")
+                #elseif (compiler(<6.1) && !os(WASI)) || (compiler(>=6.1) && _runtime(_multithreaded))
+                let err = pthread_cond_wait(self.cond, mutex)
+                precondition(err == 0, "\(#function) failed in pthread_cond with error \(err)")
+                #endif
+            }
         }
     }
 
@@ -207,7 +219,7 @@ public final class ConditionLock<T: Equatable> {
     public func lock(whenValue wantedValue: T, timeoutSeconds: Double) -> Bool {
         precondition(timeoutSeconds >= 0)
 
-#if os(Windows)
+        #if os(Windows)
         var dwMilliseconds: DWORD = DWORD(timeoutSeconds * 1000)
 
         self.lock()
@@ -217,48 +229,61 @@ public final class ConditionLock<T: Equatable> {
             }
 
             let dwWaitStart = timeGetTime()
-            if !SleepConditionVariableSRW(self.cond, self.mutex.mutex,
-                                          dwMilliseconds, 0) {
+            let result = self.mutex.withLockPrimitive { mutex in
+                SleepConditionVariableSRW(self.cond, mutex, dwMilliseconds, 0)
+            }
+            if !result {
                 let dwError = GetLastError()
-                if (dwError == ERROR_TIMEOUT) {
+                if dwError == ERROR_TIMEOUT {
                     self.unlock()
                     return false
                 }
                 fatalError("SleepConditionVariableSRW: \(dwError)")
             }
-
             // NOTE: this may be a spurious wakeup, adjust the timeout accordingly
             dwMilliseconds = dwMilliseconds - (timeGetTime() - dwWaitStart)
         }
-#else
-        let nsecPerSec: Int64 = 1000000000
+        #elseif (compiler(<6.1) && !os(WASI)) || (compiler(>=6.1) && _runtime(_multithreaded))
+        let nsecPerSec: Int64 = 1_000_000_000
         self.lock()
-        /* the timeout as a (seconds, nano seconds) pair */
+        // the timeout as a (seconds, nano seconds) pair
         let timeoutNS = Int64(timeoutSeconds * Double(nsecPerSec))
 
         var curTime = timeval()
         gettimeofday(&curTime, nil)
 
         let allNSecs: Int64 = timeoutNS + Int64(curTime.tv_usec) * 1000
-        var timeoutAbs = timespec(tv_sec: curTime.tv_sec + Int((allNSecs / nsecPerSec)),
-                                  tv_nsec: Int(allNSecs % nsecPerSec))
+        #if canImport(wasi_pthread)
+        let tvSec = curTime.tv_sec + (allNSecs / nsecPerSec)
+        #else
+        let tvSec = curTime.tv_sec + Int((allNSecs / nsecPerSec))
+        #endif
+
+        var timeoutAbs = timespec(
+            tv_sec: tvSec,
+            tv_nsec: Int(allNSecs % nsecPerSec)
+        )
         assert(timeoutAbs.tv_nsec >= 0 && timeoutAbs.tv_nsec < Int(nsecPerSec))
         assert(timeoutAbs.tv_sec >= curTime.tv_sec)
-        while true {
-            if self._value == wantedValue {
-                return true
-            }
-            switch pthread_cond_timedwait(self.cond, self.mutex.mutex, &timeoutAbs) {
-            case 0:
-                continue
-            case ETIMEDOUT:
-                self.unlock()
-                return false
-            case let e:
-                fatalError("caught error \(e) when calling pthread_cond_timedwait")
+        return self.mutex.withLockPrimitive { mutex -> Bool in
+            while true {
+                if self._value == wantedValue {
+                    return true
+                }
+                switch pthread_cond_timedwait(self.cond, mutex, &timeoutAbs) {
+                case 0:
+                    continue
+                case ETIMEDOUT:
+                    self.unlock()
+                    return false
+                case let e:
+                    fatalError("caught error \(e) when calling pthread_cond_timedwait")
+                }
             }
         }
-#endif
+        #else
+        return true
+        #endif
     }
 
     /// Release the lock, setting the state variable to `newValue`.
@@ -268,12 +293,12 @@ public final class ConditionLock<T: Equatable> {
     public func unlock(withValue newValue: T) {
         self._value = newValue
         self.unlock()
-#if os(Windows)
+        #if os(Windows)
         WakeAllConditionVariable(self.cond)
-#else
+        #elseif (compiler(<6.1) && !os(WASI)) || (compiler(>=6.1) && _runtime(_multithreaded))
         let err = pthread_cond_broadcast(self.cond)
         precondition(err == 0, "\(#function) failed in pthread_cond with error \(err)")
-#endif
+        #endif
     }
 }
 
@@ -284,14 +309,14 @@ public final class ConditionLock<T: Equatable> {
 /// https://forums.swift.org/t/support-debug-only-code/11037 for a discussion.
 @inlinable
 internal func debugOnly(_ body: () -> Void) {
-    assert({ body(); return true }())
+    assert(
+        {
+            body()
+            return true
+        }()
+    )
 }
 
-#if compiler(>=5.5) && canImport(_Concurrency)
-extension Lock: Sendable {
-
-}
-extension ConditionLock: @unchecked Sendable {
-
-}
-#endif
+@available(*, deprecated)
+extension Lock: @unchecked Sendable {}
+extension ConditionLock: @unchecked Sendable {}

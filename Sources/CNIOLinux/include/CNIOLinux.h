@@ -21,11 +21,56 @@
 #include <sys/timerfd.h>
 #include <sys/sysinfo.h>
 #include <sys/socket.h>
+#include <sys/utsname.h>
+#include <sys/xattr.h>
+#include <sys/types.h>
+#include <sys/stat.h>
 #include <sched.h>
+#include <stdbool.h>
 #include <errno.h>
 #include <pthread.h>
 #include <netinet/ip.h>
+#if __has_include(<linux/udp.h>)
+#include <linux/udp.h>
+#else
+#include <netinet/udp.h>
+#endif
+#include <linux/vm_sockets.h>
+#include <fcntl.h>
+#include <fts.h>
+#include <stdio.h>
+#include <dirent.h>
+#endif
+
+// We need to include this outside the `#ifdef` so macOS builds don't warn about the missing include,
+// but we also need to make sure the system includes come before it on Linux, so we put it down here
+// between an `#endif/#ifdef` pair rather than at the top.
 #include "liburing_nio.h"
+
+#ifdef __linux__
+
+#if __has_include(<linux/mptcp.h>)
+#include <linux/mptcp.h>
+#else
+// A backported copy of the mptcp_info structure to make programming against
+// an uncertain linux kernel easier.
+struct mptcp_info {
+    uint8_t    mptcpi_subflows;
+    uint8_t    mptcpi_add_addr_signal;
+    uint8_t    mptcpi_add_addr_accepted;
+    uint8_t    mptcpi_subflows_max;
+    uint8_t    mptcpi_add_addr_signal_max;
+    uint8_t    mptcpi_add_addr_accepted_max;
+    uint32_t   mptcpi_flags;
+    uint32_t   mptcpi_token;
+    uint64_t   mptcpi_write_seq;
+    uint64_t   mptcpi_snd_una;
+    uint64_t   mptcpi_rcv_nxt;
+    uint8_t    mptcpi_local_addr_used;
+    uint8_t    mptcpi_local_addr_max;
+    uint8_t    mptcpi_csum_enabled;
+};
+#endif
 
 // Some explanation is required here.
 //
@@ -82,5 +127,27 @@ size_t CNIOLinux_CMSG_SPACE(size_t);
 // awkward time_T pain
 extern const int CNIOLinux_SO_TIMESTAMP;
 extern const int CNIOLinux_SO_RCVTIMEO;
+
+bool CNIOLinux_supports_udp_segment();
+bool CNIOLinux_supports_udp_gro();
+
+int CNIOLinux_system_info(struct utsname* uname_data);
+
+extern const unsigned long CNIOLinux_IOCTL_VM_SOCKETS_GET_LOCAL_CID;
+
+const char* CNIOLinux_dirent_dname(struct dirent* ent);
+
+int CNIOLinux_renameat2(int oldfd, const char* old, int newfd, const char* newName, unsigned int flags);
+
+extern const int CNIOLinux_O_TMPFILE;
+extern const int CNIOLinux_AT_EMPTY_PATH;
+extern const unsigned int CNIOLinux_RENAME_NOREPLACE;
+extern const unsigned int CNIOLinux_RENAME_EXCHANGE;
+
+extern const unsigned long CNIOLinux_UTIME_OMIT;
+extern const unsigned long CNIOLinux_UTIME_NOW;
+
+extern const long CNIOLinux_UDP_MAX_SEGMENTS;
+
 #endif
 #endif

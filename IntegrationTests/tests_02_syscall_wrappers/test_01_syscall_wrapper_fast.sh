@@ -15,12 +15,14 @@
 
 set -eu
 
+# shellcheck source=IntegrationTests/tests_01_http/defines.sh
 source defines.sh
 
 swift_binary=swift
+# shellcheck disable=SC2034 # Used in defines.sh
 here="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 
-if [[ ! -z "${SWIFT_EXEC-}" ]]; then
+if [[ -n "${SWIFT_EXEC-}" ]]; then
     swift_binary="$(dirname "$SWIFT_EXEC")/swift"
 elif [[ "$(uname -s)" == "Linux" ]]; then
     swift_binary=$(which swift)
@@ -30,8 +32,14 @@ tmpdir=$(mktemp -d /tmp/.swift-nio-syscall-wrappers-sh-test_XXXXXX)
 mkdir "$tmpdir/syscallwrapper"
 cd "$tmpdir/syscallwrapper"
 swift package init --type=executable
-cat > "$tmpdir/syscallwrapper/Sources/syscallwrapper/main.swift" <<EOF
-#if os(macOS) || os(iOS) || os(watchOS) || os(tvOS)
+
+main_path="$tmpdir/syscallwrapper/Sources/main.swift"
+if [[ -d "$tmpdir/syscallwrapper/Sources/syscallwrapper/" ]]; then
+    main_path="$tmpdir/syscallwrapper/Sources/syscallwrapper/main.swift"
+fi
+
+cat > "$main_path" <<EOF
+#if canImport(Darwin)
 import Darwin
 #else
 import Glibc

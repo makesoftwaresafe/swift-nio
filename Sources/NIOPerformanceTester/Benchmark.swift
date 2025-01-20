@@ -12,6 +12,8 @@
 //
 //===----------------------------------------------------------------------===//
 
+import Dispatch
+
 protocol Benchmark: AnyObject {
     func setUp() throws
     func tearDown()
@@ -24,6 +26,33 @@ func measureAndPrint<B: Benchmark>(desc: String, benchmark bench: B) throws {
         bench.tearDown()
     }
     try measureAndPrint(desc: desc) {
-        return try bench.run()
+        try bench.run()
     }
+}
+
+@available(macOS 10.15, iOS 13, tvOS 13, watchOS 6, *)
+protocol AsyncBenchmark: AnyObject, Sendable {
+    func setUp() async throws
+    func tearDown()
+    func run() async throws -> Int
+}
+
+@available(macOS 10.15, iOS 13, tvOS 13, watchOS 6, *)
+func measureAndPrint<B: AsyncBenchmark>(desc: String, benchmark bench: B) throws {
+    let group = DispatchGroup()
+    group.enter()
+    Task {
+        do {
+            try await bench.setUp()
+            defer {
+                bench.tearDown()
+            }
+            try await measureAndPrint(desc: desc) {
+                try await bench.run()
+            }
+        }
+        group.leave()
+    }
+
+    group.wait()
 }

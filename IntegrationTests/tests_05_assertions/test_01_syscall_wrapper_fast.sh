@@ -15,28 +15,38 @@
 
 set -eu
 
+# shellcheck source=IntegrationTests/tests_01_http/defines.sh
 source defines.sh
 
 swift_binary=swiftc
 here="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 
-if [[ ! -z "${SWIFT_EXEC-}" ]]; then
+if [[ -n "${SWIFT_EXEC-}" ]]; then
     swift_binary="$(dirname "$SWIFT_EXEC")/swiftc"
 elif [[ "$(uname -s)" == "Linux" ]]; then
     swift_binary=$(which swiftc)
 fi
 
-cp "$here/../../Sources/NIOConcurrencyHelpers/lock.swift" "$tmp"
+cp "$here/../../Sources/NIOConcurrencyHelpers/"{lock,NIOLock}.swift "${tmp:?"tmp variable not set"}"
 cat > "$tmp/main.swift" <<"EOF"
-let l = Lock()
+let l = NIOLock()
 l.lock()
 l.lock()
 EOF
 
-"$swift_binary" -o "$tmp/test" "$tmp/main.swift" "$tmp/lock.swift"
+"$swift_binary" -o "$tmp/test" "$tmp/main.swift" "$tmp/"{lock,NIOLock}.swift
 if "$tmp/test"; then
     fail "should have crashed"
 else
     exit_code=$?
-    assert_equal $(( 128 + 4 )) $exit_code  # 4 == SIGILL
+    
+    # expecting irrecoverable error as process should be terminated through fatalError/precondition/assert
+    architecture=$(uname -m)
+    if [[ $architecture =~ ^(arm|aarch) ]]; then
+        assert_equal $exit_code $(( 128 + 5 )) # 5 == SIGTRAP aka trace trap, expected on ARM
+    elif [[ $architecture =~ ^(x86|i386) ]]; then
+        assert_equal $exit_code $(( 128 + 4 ))  # 4 == SIGILL aka illegal instruction, expected on x86
+    else
+        fail "unknown CPU architecture for which we don't know the expected signal for a crash"
+    fi
 fi

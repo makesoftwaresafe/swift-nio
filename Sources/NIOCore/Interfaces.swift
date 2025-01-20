@@ -12,10 +12,18 @@
 //
 //===----------------------------------------------------------------------===//
 #if os(Linux) || os(FreeBSD) || os(Android)
+#if canImport(Glibc)
 import Glibc
+#elseif canImport(Musl)
+import Musl
+#elseif canImport(Bionic)
+import Bionic
+#endif
 import CNIOLinux
-#elseif os(macOS) || os(iOS) || os(tvOS) || os(watchOS)
+#elseif canImport(Darwin)
 import Darwin
+#elseif canImport(WASILibc)
+import WASILibc
 #elseif os(Windows)
 import let WinSDK.AF_INET
 import let WinSDK.AF_INET6
@@ -34,22 +42,24 @@ import struct WinSDK.sockaddr_storage
 import struct WinSDK.sockaddr_un
 
 import typealias WinSDK.UINT8
+#else
+#error("The Core interfaces module was unable to identify your C library.")
 #endif
 
-#if !os(Windows)
-private extension ifaddrs {
-    var dstaddr: UnsafeMutablePointer<sockaddr>? {
+#if !os(Windows) && !os(WASI)
+extension ifaddrs {
+    fileprivate var dstaddr: UnsafeMutablePointer<sockaddr>? {
         #if os(Linux) || os(Android)
         return self.ifa_ifu.ifu_dstaddr
-        #elseif os(macOS) || os(iOS) || os(watchOS) || os(tvOS)
+        #elseif canImport(Darwin)
         return self.ifa_dstaddr
         #endif
     }
 
-    var broadaddr: UnsafeMutablePointer<sockaddr>? {
+    fileprivate var broadaddr: UnsafeMutablePointer<sockaddr>? {
         #if os(Linux) || os(Android)
         return self.ifa_ifu.ifu_broadaddr
-        #elseif os(macOS) || os(iOS) || os(watchOS) || os(tvOS)
+        #elseif canImport(Darwin)
         return self.ifa_dstaddr
         #endif
     }
@@ -58,7 +68,7 @@ private extension ifaddrs {
 
 /// A representation of a single network interface on a system.
 @available(*, deprecated, renamed: "NIONetworkDevice")
-public final class NIONetworkInterface {
+public final class NIONetworkInterface: Sendable {
     // This is a class because in almost all cases this will carry
     // four structs that are backed by classes, and so will incur 4
     // refcount operations each time it is copied.
@@ -87,11 +97,20 @@ public final class NIONetworkInterface {
     /// The index of the interface, as provided by `if_nametoindex`.
     public let interfaceIndex: Int
 
-#if os(Windows)
-    internal init?(_ pAdapter: UnsafeMutablePointer<IP_ADAPTER_ADDRESSES>,
-                   _ pAddress: UnsafeMutablePointer<IP_ADAPTER_UNICAST_ADDRESS>) {
-        self.name = String(decodingCString: pAdapter.pointee.FriendlyName,
-                           as: UTF16.self)
+    #if os(WASI)
+    @available(*, unavailable)
+    init() { fatalError() }
+    #endif
+
+    #if os(Windows)
+    internal init?(
+        _ pAdapter: UnsafeMutablePointer<IP_ADAPTER_ADDRESSES>,
+        _ pAddress: UnsafeMutablePointer<IP_ADAPTER_UNICAST_ADDRESS>
+    ) {
+        self.name = String(
+            decodingCString: pAdapter.pointee.FriendlyName,
+            as: UTF16.self
+        )
         guard let address = pAddress.pointee.Address.lpSockaddr.convert() else {
             return nil
         }
@@ -115,9 +134,9 @@ public final class NIONetworkInterface {
         self.pointToPointDestinationAddress = nil
         self.multicastSupported = false
     }
-#else
+    #elseif !os(WASI)
     internal init?(_ caddr: ifaddrs) {
-        self.name = String(cString: caddr.ifa_name)
+        self.name = String(cString: caddr.ifa_name!)
 
         guard caddr.ifa_addr != nil else {
             return nil
@@ -157,7 +176,7 @@ public final class NIONetworkInterface {
             return nil
         }
     }
-#endif
+    #endif
 }
 
 @available(*, deprecated, renamed: "NIONetworkDevice")
@@ -171,13 +190,11 @@ extension NIONetworkInterface: CustomDebugStringConvertible {
 
 @available(*, deprecated, renamed: "NIONetworkDevice")
 extension NIONetworkInterface: Equatable {
-    public static func ==(lhs: NIONetworkInterface, rhs: NIONetworkInterface) -> Bool {
-        return lhs.name == rhs.name &&
-               lhs.address == rhs.address &&
-               lhs.netmask == rhs.netmask &&
-               lhs.broadcastAddress == rhs.broadcastAddress &&
-               lhs.pointToPointDestinationAddress == rhs.pointToPointDestinationAddress &&
-               lhs.interfaceIndex == rhs.interfaceIndex
+    public static func == (lhs: NIONetworkInterface, rhs: NIONetworkInterface) -> Bool {
+        lhs.name == rhs.name && lhs.address == rhs.address && lhs.netmask == rhs.netmask
+            && lhs.broadcastAddress == rhs.broadcastAddress
+            && lhs.pointToPointDestinationAddress == rhs.pointToPointDestinationAddress
+            && lhs.interfaceIndex == rhs.interfaceIndex
     }
 }
 
@@ -206,7 +223,7 @@ public struct NIONetworkDevice {
     /// The name of the network device.
     public var name: String {
         get {
-            return self.backing.name
+            self.backing.name
         }
         set {
             self.uniquifyIfNeeded()
@@ -217,7 +234,7 @@ public struct NIONetworkDevice {
     /// The address associated with the given network device.
     public var address: SocketAddress? {
         get {
-            return self.backing.address
+            self.backing.address
         }
         set {
             self.uniquifyIfNeeded()
@@ -228,7 +245,7 @@ public struct NIONetworkDevice {
     /// The netmask associated with this address, if any.
     public var netmask: SocketAddress? {
         get {
-            return self.backing.netmask
+            self.backing.netmask
         }
         set {
             self.uniquifyIfNeeded()
@@ -240,7 +257,7 @@ public struct NIONetworkDevice {
     /// interfaces do not, especially those that have a `pointToPointDestinationAddress`.
     public var broadcastAddress: SocketAddress? {
         get {
-            return self.backing.broadcastAddress
+            self.backing.broadcastAddress
         }
         set {
             self.uniquifyIfNeeded()
@@ -253,7 +270,7 @@ public struct NIONetworkDevice {
     /// instead.
     public var pointToPointDestinationAddress: SocketAddress? {
         get {
-            return self.backing.pointToPointDestinationAddress
+            self.backing.pointToPointDestinationAddress
         }
         set {
             self.uniquifyIfNeeded()
@@ -264,7 +281,7 @@ public struct NIONetworkDevice {
     /// If the Interface supports Multicast
     public var multicastSupported: Bool {
         get {
-            return self.backing.multicastSupported
+            self.backing.multicastSupported
         }
         set {
             self.uniquifyIfNeeded()
@@ -275,7 +292,7 @@ public struct NIONetworkDevice {
     /// The index of the interface, as provided by `if_nametoindex`.
     public var interfaceIndex: Int {
         get {
-            return self.backing.interfaceIndex
+            self.backing.interfaceIndex
         }
         set {
             self.uniquifyIfNeeded()
@@ -288,15 +305,17 @@ public struct NIONetworkDevice {
     /// This constructor will fail if NIO does not understand the format of the underlying
     /// socket address family. This is quite common: for example, Linux will return AF_PACKET
     /// addressed interfaces on most platforms, which NIO does not currently understand.
-#if os(Windows)
-    internal init?(_ pAdapter: UnsafeMutablePointer<IP_ADAPTER_ADDRESSES>,
-                   _ pAddress: UnsafeMutablePointer<IP_ADAPTER_UNICAST_ADDRESS>) {
+    #if os(Windows)
+    internal init?(
+        _ pAdapter: UnsafeMutablePointer<IP_ADAPTER_ADDRESSES>,
+        _ pAddress: UnsafeMutablePointer<IP_ADAPTER_UNICAST_ADDRESS>
+    ) {
         guard let backing = Backing(pAdapter, pAddress) else {
             return nil
         }
         self.backing = backing
     }
-#else
+    #elseif !os(WASI)
     internal init?(_ caddr: ifaddrs) {
         guard let backing = Backing(caddr) else {
             return nil
@@ -304,9 +323,9 @@ public struct NIONetworkDevice {
 
         self.backing = backing
     }
-#endif
+    #endif
 
-#if !os(Windows)
+    #if !os(Windows) && !os(WASI)
     /// Convert a `NIONetworkInterface` to a `NIONetworkDevice`. As `NIONetworkDevice`s are a superset of `NIONetworkInterface`s,
     /// it is always possible to perform this conversion.
     @available(*, deprecated, message: "This is a compatibility helper, and will be removed in a future release")
@@ -321,15 +340,17 @@ public struct NIONetworkDevice {
             interfaceIndex: interface.interfaceIndex
         )
     }
-#endif
+    #endif
 
-    public init(name: String,
-                address: SocketAddress?,
-                netmask: SocketAddress?,
-                broadcastAddress: SocketAddress?,
-                pointToPointDestinationAddress: SocketAddress,
-                multicastSupported: Bool,
-                interfaceIndex: Int) {
+    public init(
+        name: String,
+        address: SocketAddress?,
+        netmask: SocketAddress?,
+        broadcastAddress: SocketAddress?,
+        pointToPointDestinationAddress: SocketAddress,
+        multicastSupported: Bool,
+        interfaceIndex: Int
+    ) {
         self.backing = Backing(
             name: name,
             address: address,
@@ -348,9 +369,7 @@ public struct NIONetworkDevice {
     }
 }
 
-#if swift(>=5.5) && canImport(_Concurrency)
 extension NIONetworkDevice: @unchecked Sendable {}
-#endif
 
 extension NIONetworkDevice {
     fileprivate final class Backing {
@@ -383,11 +402,15 @@ extension NIONetworkDevice {
         /// This constructor will fail if NIO does not understand the format of the underlying
         /// socket address family. This is quite common: for example, Linux will return AF_PACKET
         /// addressed interfaces on most platforms, which NIO does not currently understand.
-#if os(Windows)
-        internal init?(_ pAdapter: UnsafeMutablePointer<IP_ADAPTER_ADDRESSES>,
-                       _ pAddress: UnsafeMutablePointer<IP_ADAPTER_UNICAST_ADDRESS>) {
-            self.name = String(decodingCString: pAdapter.pointee.FriendlyName,
-                               as: UTF16.self)
+        #if os(Windows)
+        internal init?(
+            _ pAdapter: UnsafeMutablePointer<IP_ADAPTER_ADDRESSES>,
+            _ pAddress: UnsafeMutablePointer<IP_ADAPTER_UNICAST_ADDRESS>
+        ) {
+            self.name = String(
+                decodingCString: pAdapter.pointee.FriendlyName,
+                as: UTF16.self
+            )
             self.address = pAddress.pointee.Address.lpSockaddr.convert()
 
             switch pAddress.pointee.Address.lpSockaddr.pointee.sa_family {
@@ -408,9 +431,9 @@ extension NIONetworkDevice {
             self.pointToPointDestinationAddress = nil
             self.multicastSupported = false
         }
-#else
+        #elseif !os(WASI)
         internal init?(_ caddr: ifaddrs) {
-            self.name = String(cString: caddr.ifa_name)
+            self.name = String(cString: caddr.ifa_name!)
             self.address = caddr.ifa_addr.flatMap { $0.convert() }
             self.netmask = caddr.ifa_netmask.flatMap { $0.convert() }
 
@@ -432,7 +455,7 @@ extension NIONetworkDevice {
                 return nil
             }
         }
-#endif
+        #endif
 
         init(copying original: Backing) {
             self.name = original.name
@@ -444,13 +467,15 @@ extension NIONetworkDevice {
             self.interfaceIndex = original.interfaceIndex
         }
 
-        init(name: String,
-             address: SocketAddress?,
-             netmask: SocketAddress?,
-             broadcastAddress: SocketAddress?,
-             pointToPointDestinationAddress: SocketAddress?,
-             multicastSupported: Bool,
-             interfaceIndex: Int) {
+        init(
+            name: String,
+            address: SocketAddress?,
+            netmask: SocketAddress?,
+            broadcastAddress: SocketAddress?,
+            pointToPointDestinationAddress: SocketAddress?,
+            multicastSupported: Bool,
+            interfaceIndex: Int
+        ) {
             self.name = name
             self.address = address
             self.netmask = netmask
@@ -472,13 +497,11 @@ extension NIONetworkDevice: CustomDebugStringConvertible {
 
 // Sadly, as this is class-backed we cannot synthesise the implementation.
 extension NIONetworkDevice: Equatable {
-    public static func ==(lhs: NIONetworkDevice, rhs: NIONetworkDevice) -> Bool {
-        return lhs.name == rhs.name &&
-               lhs.address == rhs.address &&
-               lhs.netmask == rhs.netmask &&
-               lhs.broadcastAddress == rhs.broadcastAddress &&
-               lhs.pointToPointDestinationAddress == rhs.pointToPointDestinationAddress &&
-               lhs.interfaceIndex == rhs.interfaceIndex
+    public static func == (lhs: NIONetworkDevice, rhs: NIONetworkDevice) -> Bool {
+        lhs.name == rhs.name && lhs.address == rhs.address && lhs.netmask == rhs.netmask
+            && lhs.broadcastAddress == rhs.broadcastAddress
+            && lhs.pointToPointDestinationAddress == rhs.pointToPointDestinationAddress
+            && lhs.interfaceIndex == rhs.interfaceIndex
     }
 }
 
@@ -492,4 +515,3 @@ extension NIONetworkDevice: Hashable {
         hasher.combine(self.interfaceIndex)
     }
 }
-

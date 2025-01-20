@@ -12,6 +12,8 @@
 //
 //===----------------------------------------------------------------------===//
 
+#if !canImport(Darwin) || os(macOS)
+import NIOCore
 import NIOPosix
 
 struct StrictCrashTests {
@@ -27,3 +29,4 @@ struct StrictCrashTests {
         }
     }
 }
+#endif

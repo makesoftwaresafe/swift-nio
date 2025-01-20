@@ -12,29 +12,17 @@
 //
 //===----------------------------------------------------------------------===//
 
-import XCTest
-@testable import NIOCore
 import NIOEmbedded
+import XCTest
+
+@testable import NIOCore
 
 public final class NIOSingleStepByteToMessageDecoderTest: XCTestCase {
     private final class ByteToInt32Decoder: NIOSingleStepByteToMessageDecoder {
         typealias InboundOut = Int32
 
         func decode(buffer: inout ByteBuffer) throws -> InboundOut? {
-            return buffer.readInteger()
-        }
-
-        func decodeLast(buffer: inout ByteBuffer, seenEOF: Bool) throws -> InboundOut? {
-            XCTAssertTrue(seenEOF)
-            return try self.decode(buffer: &buffer)
-        }
-    }
-
-    private final class ForeverDecoder: NIOSingleStepByteToMessageDecoder {
-        typealias InboundOut = Never
-
-        func decode(buffer: inout ByteBuffer) throws -> InboundOut? {
-            return nil
+            buffer.readInteger()
         }
 
         func decodeLast(buffer: inout ByteBuffer, seenEOF: Bool) throws -> InboundOut? {
@@ -47,7 +35,7 @@ public final class NIOSingleStepByteToMessageDecoderTest: XCTestCase {
         typealias InboundOut = ByteBuffer
 
         func decode(buffer: inout ByteBuffer) throws -> InboundOut? {
-            return buffer.readSlice(length: 512)
+            buffer.readSlice(length: 512)
         }
 
         func decodeLast(buffer: inout ByteBuffer, seenEOF: Bool) throws -> InboundOut? {
@@ -82,7 +70,7 @@ public final class NIOSingleStepByteToMessageDecoderTest: XCTestCase {
         var lastBuffer: ByteBuffer?
 
         func decode(buffer: inout ByteBuffer) throws -> InboundOut? {
-            return buffer.readSlice(length: 2)
+            buffer.readSlice(length: 2)
         }
 
         func decodeLast(buffer: inout ByteBuffer, seenEOF: Bool) throws -> InboundOut? {
@@ -100,7 +88,7 @@ public final class NIOSingleStepByteToMessageDecoderTest: XCTestCase {
             messages.append(message)
         }
 
-        var count: Int { return messages.count }
+        var count: Int { messages.count }
 
         func retrieveMessage() -> InboundOut? {
             if messages.isEmpty {
@@ -124,7 +112,12 @@ public final class NIOSingleStepByteToMessageDecoderTest: XCTestCase {
         XCTAssertNil(messageReceiver.retrieveMessage())
 
         buffer.moveWriterIndex(to: writerIndex)
-        XCTAssertNoThrow(try processor.process(buffer: buffer.getSlice(at: writerIndex - 1, length: 1)!, messageReceiver.receiveMessage))
+        XCTAssertNoThrow(
+            try processor.process(
+                buffer: buffer.getSlice(at: writerIndex - 1, length: 1)!,
+                messageReceiver.receiveMessage
+            )
+        )
 
         var buffer2 = allocator.buffer(capacity: 32)
         buffer2.writeInteger(Int32(2))
@@ -176,7 +169,7 @@ public final class NIOSingleStepByteToMessageDecoderTest: XCTestCase {
         XCTAssertEqual(processor._buffer!.capacity, 2048)
         XCTAssertEqual(2, processor._buffer!.readableBytes)
         XCTAssertEqual(1024, processor._buffer!.readerIndex)
-        
+
         // Finally we're going to send in another 513 bytes. This will cause another chunk to be
         // passed into our decoder buffer, which has a capacity of 2048 bytes. Since the buffer has
         // enough available space (1022 bytes) there will be no buffer resize before the decoding.
@@ -184,10 +177,10 @@ public final class NIOSingleStepByteToMessageDecoderTest: XCTestCase {
         // (3 * 512 bytes). This means that 75% of the buffer's capacity can now be reclaimed, which
         // will lead to a reclaim. The resulting buffer will have a capacity of 2048 bytes (based
         // on its previous growth), with 3 readable bytes remaining.
-        
+
         XCTAssertNoThrow(try processor.process(buffer: buffer, messageReceiver.receiveMessage))
         XCTAssertEqual(512, messageReceiver.retrieveMessage()!.readableBytes)
-        
+
         XCTAssertEqual(processor._buffer!.capacity, 2048)
         XCTAssertEqual(3, processor._buffer!.readableBytes)
         XCTAssertEqual(0, processor._buffer!.readerIndex)
@@ -212,7 +205,9 @@ public final class NIOSingleStepByteToMessageDecoderTest: XCTestCase {
 
         // Now we're going to send in one more byte. This will cause a chunk to be passed on,
         // shrinking the held memory to 3072 bytes. However, memory will be reclaimed.
-        XCTAssertNoThrow(try processor.process(buffer: buffer.getSlice(at: 0, length: 1)!, messageReceiver.receiveMessage))
+        XCTAssertNoThrow(
+            try processor.process(buffer: buffer.getSlice(at: 0, length: 1)!, messageReceiver.receiveMessage)
+        )
         XCTAssertEqual(2048, messageReceiver.retrieveMessage()!.readableBytes)
         XCTAssertEqual(3072, processor._buffer!.readableBytes)
         XCTAssertEqual(0, processor._buffer!.readerIndex)
@@ -227,35 +222,58 @@ public final class NIOSingleStepByteToMessageDecoderTest: XCTestCase {
         var buffer = allocator.buffer(capacity: 16)
         buffer.clear()
         buffer.writeStaticString("1")
+        XCTAssertEqual(processor.unprocessedBytes, 0)
         XCTAssertNoThrow(try processor.process(buffer: buffer, messageReceiver.receiveMessage))
+        XCTAssertEqual(processor.unprocessedBytes, 1)
         buffer.clear()
         buffer.writeStaticString("23")
         XCTAssertNoThrow(try processor.process(buffer: buffer, messageReceiver.receiveMessage))
+        XCTAssertEqual(processor.unprocessedBytes, 1)
         buffer.clear()
         buffer.writeStaticString("4567890x")
         XCTAssertNoThrow(try processor.process(buffer: buffer, messageReceiver.receiveMessage))
+        XCTAssertEqual(processor.unprocessedBytes, 1)
         XCTAssertNoThrow(try processor.finishProcessing(seenEOF: false, messageReceiver.receiveMessage))
+        XCTAssertEqual(processor.unprocessedBytes, 1)
 
-        XCTAssertEqual("12", messageReceiver.retrieveMessage().map {
-            String(decoding: $0.readableBytesView, as: Unicode.UTF8.self)
-        })
-        XCTAssertEqual("34", messageReceiver.retrieveMessage().map {
-            String(decoding: $0.readableBytesView, as: Unicode.UTF8.self)
-        })
-        XCTAssertEqual("56", messageReceiver.retrieveMessage().map {
-            String(decoding: $0.readableBytesView, as: Unicode.UTF8.self)
-        })
-        XCTAssertEqual("78", messageReceiver.retrieveMessage().map {
-            String(decoding: $0.readableBytesView, as: Unicode.UTF8.self)
-        })
-        XCTAssertEqual("90", messageReceiver.retrieveMessage().map {
-            String(decoding: $0.readableBytesView, as: Unicode.UTF8.self)
-        })
+        XCTAssertEqual(
+            "12",
+            messageReceiver.retrieveMessage().map {
+                String(decoding: $0.readableBytesView, as: Unicode.UTF8.self)
+            }
+        )
+        XCTAssertEqual(
+            "34",
+            messageReceiver.retrieveMessage().map {
+                String(decoding: $0.readableBytesView, as: Unicode.UTF8.self)
+            }
+        )
+        XCTAssertEqual(
+            "56",
+            messageReceiver.retrieveMessage().map {
+                String(decoding: $0.readableBytesView, as: Unicode.UTF8.self)
+            }
+        )
+        XCTAssertEqual(
+            "78",
+            messageReceiver.retrieveMessage().map {
+                String(decoding: $0.readableBytesView, as: Unicode.UTF8.self)
+            }
+        )
+        XCTAssertEqual(
+            "90",
+            messageReceiver.retrieveMessage().map {
+                String(decoding: $0.readableBytesView, as: Unicode.UTF8.self)
+            }
+        )
         XCTAssertNil(messageReceiver.retrieveMessage())
 
-        XCTAssertEqual("x", decoder.lastBuffer.map {
-            String(decoding: $0.readableBytesView, as: Unicode.UTF8.self)
-        })
+        XCTAssertEqual(
+            "x",
+            decoder.lastBuffer.map {
+                String(decoding: $0.readableBytesView, as: Unicode.UTF8.self)
+            }
+        )
         XCTAssertEqual(1, decoder.decodeLastCalls)
     }
 
@@ -350,11 +368,11 @@ public final class NIOSingleStepByteToMessageDecoderTest: XCTestCase {
             typealias InboundOut = Never
 
             func decode(buffer: inout ByteBuffer) throws -> InboundOut? {
-                return nil
+                nil
             }
 
             func decodeLast(buffer: inout ByteBuffer, seenEOF: Bool) throws -> InboundOut? {
-                return nil
+                nil
             }
         }
 
@@ -382,7 +400,7 @@ public final class NIOSingleStepByteToMessageDecoderTest: XCTestCase {
             }
 
             func decodeLast(buffer: inout ByteBuffer, seenEOF: Bool) throws -> InboundOut? {
-                return try decode(buffer: &buffer)
+                try decode(buffer: &buffer)
             }
         }
 
@@ -412,14 +430,14 @@ public final class NIOSingleStepByteToMessageDecoderTest: XCTestCase {
                     self.processor = NIOSingleStepByteToMessageProcessor(OneByteStringDecoder())
                 }
                 do {
-                    try self.processor!.process(buffer: self.unwrapInboundIn(data)) { message in
+                    try self.processor!.process(buffer: Self.unwrapInboundIn(data)) { message in
                         self.produced += 1
                         // Produce an extra write the first time we are called to test reentrancy
                         if self.produced == 1 {
                             let buf = ByteBuffer(string: "X")
                             XCTAssertNoThrow(try (context.channel as! EmbeddedChannel).writeInbound(buf))
                         }
-                        context.fireChannelRead(self.wrapInboundOut(message))
+                        context.fireChannelRead(Self.wrapInboundOut(message))
                     }
                 } catch {
                     context.fireErrorCaught(error)
@@ -431,7 +449,7 @@ public final class NIOSingleStepByteToMessageDecoderTest: XCTestCase {
             typealias InboundOut = String
 
             func decode(buffer: inout ByteBuffer) throws -> String? {
-                return buffer.readString(length: 1)
+                buffer.readString(length: 1)
             }
 
             func decodeLast(buffer: inout ByteBuffer, seenEOF: Bool) throws -> String? {
@@ -448,19 +466,19 @@ public final class NIOSingleStepByteToMessageDecoderTest: XCTestCase {
         XCTAssertNoThrow(XCTAssertEqual("a", try channel.readInbound()))
         XCTAssertNoThrow(XCTAssertTrue(try channel.finish().isClean))
     }
-    
+
     func testWeDoNotCallShouldReclaimMemoryAsLongAsFramesAreProduced() {
         struct TestByteToMessageDecoder: NIOSingleStepByteToMessageDecoder {
             typealias InboundOut = TestMessage
-            
+
             enum TestMessage: Equatable {
                 case foo
             }
-            
+
             var lastByteBuffer: ByteBuffer?
             var decodeHits = 0
             var reclaimHits = 0
-            
+
             mutating func decode(buffer: inout ByteBuffer) throws -> TestMessage? {
                 XCTAssertEqual(self.decodeHits * 3, buffer.readerIndex)
                 self.decodeHits += 1
@@ -470,29 +488,105 @@ public final class NIOSingleStepByteToMessageDecoderTest: XCTestCase {
                 buffer.moveReaderIndex(forwardBy: 3)
                 return .foo
             }
-            
+
             mutating func decodeLast(buffer: inout ByteBuffer, seenEOF: Bool) throws -> TestMessage? {
                 try self.decode(buffer: &buffer)
             }
-            
+
             mutating func shouldReclaimBytes(buffer: ByteBuffer) -> Bool {
                 self.reclaimHits += 1
                 return true
             }
         }
-        
+
         let decoder = TestByteToMessageDecoder()
         let processor = NIOSingleStepByteToMessageProcessor(decoder, maximumBufferSize: nil)
-        
+
         let buffer = ByteBuffer(repeating: 0, count: 3001)
         var callbackCount = 0
-        XCTAssertNoThrow(try processor.process(buffer: buffer) { _ in
-            callbackCount += 1
-        })
-        
+        XCTAssertNoThrow(
+            try processor.process(buffer: buffer) { _ in
+                callbackCount += 1
+            }
+        )
+
         XCTAssertEqual(callbackCount, 1000)
         XCTAssertEqual(processor.decoder.decodeHits, 1001)
         XCTAssertEqual(processor.decoder.reclaimHits, 1)
         XCTAssertEqual(processor._buffer!.readableBytes, 1)
+    }
+
+    func testUnprocessedBytes() {
+        let allocator = ByteBufferAllocator()
+        let processor = NIOSingleStepByteToMessageProcessor(LargeChunkDecoder())  // reads slices of 512 bytes
+        let messageReceiver: MessageReceiver<ByteBuffer> = MessageReceiver()
+
+        // We're going to send in 128 bytes. This will be held.
+        var buffer = allocator.buffer(capacity: 128)
+        buffer.writeBytes(Array(repeating: 0x04, count: 128))
+        XCTAssertNoThrow(try processor.process(buffer: buffer, messageReceiver.receiveMessage))
+        XCTAssertEqual(0, messageReceiver.count)
+        XCTAssertEqual(processor.unprocessedBytes, 128)
+
+        // Adding 513 bytes, will cause a message to be returned and an extra byte to be saved.
+        buffer.clear()
+        buffer.writeBytes(Array(repeating: 0x04, count: 513))
+        XCTAssertNoThrow(try processor.process(buffer: buffer, messageReceiver.receiveMessage))
+        XCTAssertEqual(1, messageReceiver.count)
+        XCTAssertEqual(processor.unprocessedBytes, 129)
+
+        // Adding 255 bytes, will cause 255 more bytes to be held.
+        buffer.clear()
+        buffer.writeBytes(Array(repeating: 0x04, count: 255))
+        XCTAssertNoThrow(try processor.process(buffer: buffer, messageReceiver.receiveMessage))
+        XCTAssertEqual(1, messageReceiver.count)
+        XCTAssertEqual(processor.unprocessedBytes, 384)
+
+        // Adding 128 bytes, will cause another message to be returned and the buffer to be empty.
+        buffer.clear()
+        buffer.writeBytes(Array(repeating: 0x04, count: 128))
+        XCTAssertNoThrow(try processor.process(buffer: buffer, messageReceiver.receiveMessage))
+        XCTAssertEqual(2, messageReceiver.count)
+        XCTAssertEqual(processor.unprocessedBytes, 0)
+    }
+
+    /// Tests re-entrancy by having a nested decoding operation empty the buffer and exit part way
+    /// through the outer processing step
+    func testErrorDuringNestedDecoding() {
+        class ThrowingOnLastDecoder: NIOSingleStepByteToMessageDecoder {
+            /// `ByteBuffer` is the expected type passed in.
+            public typealias InboundIn = ByteBuffer
+            /// `ByteBuffer`s will be passed to the next stage.
+            public typealias InboundOut = ByteBuffer
+
+            public init() {}
+
+            struct DecodeLastError: Error {}
+
+            func decodeLast(buffer: inout NIOCore.ByteBuffer, seenEOF: Bool) throws -> NIOCore.ByteBuffer? {
+                buffer = ByteBuffer()  // to allow the decode loop to exit
+                throw DecodeLastError()
+            }
+
+            func decode(buffer: inout NIOCore.ByteBuffer) throws -> NIOCore.ByteBuffer? {
+                ByteBuffer()
+            }
+        }
+
+        let decoder = ThrowingOnLastDecoder()
+        let b2mp = NIOSingleStepByteToMessageProcessor(decoder)
+        var errorObserved = false
+        XCTAssertNoThrow(
+            try b2mp.process(buffer: ByteBuffer(string: "1\n\n2\n3\n")) { line in
+                // We will throw an error to exit the decoding within the nested process call prematurely.
+                // Unless this is carefully handled we can be left in an inconsistent state which the outer call will encounter
+                do {
+                    try b2mp.finishProcessing(seenEOF: true) { _ in }
+                } catch _ as ThrowingOnLastDecoder.DecodeLastError {
+                    errorObserved = true
+                }
+            }
+        )
+        XCTAssertTrue(errorObserved)
     }
 }

@@ -13,7 +13,7 @@
 //===----------------------------------------------------------------------===//
 import NIOCore
 
-class BaseStreamSocketChannel<Socket: SocketProtocol>: BaseSocketChannel<Socket> {
+class BaseStreamSocketChannel<Socket: SocketProtocol>: BaseSocketChannel<Socket>, @unchecked Sendable {
     internal var connectTimeoutScheduled: Optional<Scheduled<Void>>
     private var allowRemoteHalfClosure: Bool = false
     private var inputShutdown: Bool = false
@@ -26,7 +26,7 @@ class BaseStreamSocketChannel<Socket: SocketProtocol>: BaseSocketChannel<Socket>
         eventLoop: SelectableEventLoop,
         recvAllocator: RecvByteBufferAllocator
     ) throws {
-        self.pendingWrites = PendingStreamWritesManager(iovecs: eventLoop.iovecs, storageRefs: eventLoop.storageRefs)
+        self.pendingWrites = PendingStreamWritesManager(bufferPool: eventLoop.bufferPool)
         self.connectTimeoutScheduled = nil
         try super.init(
             socket: socket,
@@ -47,7 +47,7 @@ class BaseStreamSocketChannel<Socket: SocketProtocol>: BaseSocketChannel<Socket>
         self.eventLoop.assertInEventLoop()
 
         guard self.isOpen else {
-            throw ChannelError.ioOnClosedChannel
+            throw ChannelError._ioOnClosedChannel
         }
 
         switch option {
@@ -66,7 +66,7 @@ class BaseStreamSocketChannel<Socket: SocketProtocol>: BaseSocketChannel<Socket>
         self.eventLoop.assertInEventLoop()
 
         guard self.isOpen else {
-            throw ChannelError.ioOnClosedChannel
+            throw ChannelError._ioOnClosedChannel
         }
 
         switch option {
@@ -76,6 +76,8 @@ class BaseStreamSocketChannel<Socket: SocketProtocol>: BaseSocketChannel<Socket>
             return self.pendingWrites.writeSpinCount as! Option.Value
         case _ as ChannelOptions.Types.WriteBufferWaterMarkOption:
             return self.pendingWrites.waterMark as! Option.Value
+        case _ as ChannelOptions.Types.BufferedWritableBytesOption:
+            return Int(self.pendingWrites.bufferedBytes) as! Option.Value
         default:
             return try super.getOption0(option)
         }
@@ -98,7 +100,7 @@ class BaseStreamSocketChannel<Socket: SocketProtocol>: BaseSocketChannel<Socket>
     // MARK: BaseSocketChannel's must override API that cannot be further refined by subclasses
     // This is `Channel` API so must be thread-safe.
     final override public var isWritable: Bool {
-        return self.pendingWrites.isWritable
+        self.pendingWrites.isWritable
     }
 
     final override var isOpen: Bool {
@@ -109,21 +111,24 @@ class BaseStreamSocketChannel<Socket: SocketProtocol>: BaseSocketChannel<Socket>
 
     final override func readFromSocket() throws -> ReadResult {
         self.eventLoop.assertInEventLoop()
-        // Just allocate one time for the while read loop. This is fine as ByteBuffer is a struct and uses COW.
-        var buffer = self.recvAllocator.buffer(allocator: allocator)
         var result = ReadResult.none
-        for i in 1...self.maxMessagesPerRead {
+        for _ in 1...self.maxMessagesPerRead {
             guard self.isOpen && !self.inputShutdown else {
-                throw ChannelError.eof
+                throw ChannelError._eof
             }
+
+            let (buffer, readResult) = try self.recvBufferPool.buffer(allocator: self.allocator) { buffer in
+                try buffer.withMutableWritePointer { pointer in
+                    try self.socket.read(pointer: pointer)
+                }
+            }
+
             // Reset reader and writerIndex and so allow to have the buffer filled again. This is better here than at
             // the end of the loop to not do an allocation when the loop exits.
-            buffer.clear()
-            switch try buffer.withMutableWritePointer(body: { try self.socket.read(pointer: $0) }) {
+            switch readResult {
             case .processed(let bytesRead):
                 if bytesRead > 0 {
-                    let mayGrow = recvAllocator.record(actualReadBytes: bytesRead)
-
+                    self.recvBufferPool.record(actualReadBytes: bytesRead)
                     self.readPending = false
 
                     assert(self.isActive)
@@ -136,10 +141,6 @@ class BaseStreamSocketChannel<Socket: SocketProtocol>: BaseSocketChannel<Socket>
                         // Also this will allow us to call fireChannelReadComplete() which may give the user the chance to flush out all pending
                         // writes.
                         return result
-                    } else if mayGrow && i < self.maxMessagesPerRead {
-                        // if the ByteBuffer may grow on the next allocation due we used all the writable bytes we should allocate a new `ByteBuffer` to allow ramping up how much data
-                        // we are able to read on the next read operation.
-                        buffer = self.recvAllocator.buffer(allocator: allocator)
                     }
                 } else {
                     if self.inputShutdown {
@@ -149,7 +150,7 @@ class BaseStreamSocketChannel<Socket: SocketProtocol>: BaseSocketChannel<Socket>
                         return result
                     }
                     // end-of-file
-                    throw ChannelError.eof
+                    throw ChannelError._eof
                 }
             case .wouldBlock(let bytesRead):
                 assert(bytesRead == 0)
@@ -160,19 +161,23 @@ class BaseStreamSocketChannel<Socket: SocketProtocol>: BaseSocketChannel<Socket>
     }
 
     final override func writeToSocket() throws -> OverallWriteResult {
-        let result = try self.pendingWrites.triggerAppropriateWriteOperations(scalarBufferWriteOperation: { ptr in
-            guard ptr.count > 0 else {
-                // No need to call write if the buffer is empty.
-                return .processed(0)
+        let result = try self.pendingWrites.triggerAppropriateWriteOperations(
+            scalarBufferWriteOperation: { ptr in
+                guard ptr.count > 0 else {
+                    // No need to call write if the buffer is empty.
+                    return .processed(0)
+                }
+                // normal write
+                return try self.socket.write(pointer: ptr)
+            },
+            vectorBufferWriteOperation: { ptrs in
+                // Gathering write
+                try self.socket.writev(iovecs: ptrs)
+            },
+            scalarFileWriteOperation: { descriptor, index, endIndex in
+                try self.socket.sendFile(fd: descriptor, offset: index, count: endIndex - index)
             }
-            // normal write
-            return try self.socket.write(pointer: ptr)
-        }, vectorBufferWriteOperation: { ptrs in
-            // Gathering write
-            try self.socket.writev(iovecs: ptrs)
-        }, scalarFileWriteOperation: { descriptor, index, endIndex in
-            try self.socket.sendFile(fd: descriptor, offset: index, count: endIndex - index)
-        })
+        )
         return result
     }
 
@@ -181,7 +186,12 @@ class BaseStreamSocketChannel<Socket: SocketProtocol>: BaseSocketChannel<Socket>
             switch mode {
             case .output:
                 if self.outputShutdown {
-                    promise?.fail(ChannelError.outputClosed)
+                    promise?.fail(ChannelError._outputClosed)
+                    return
+                }
+                if self.inputShutdown {
+                    // Escalate to full closure
+                    self.close0(error: error, mode: .all, promise: promise)
                     return
                 }
                 try self.shutdownSocket(mode: mode)
@@ -193,7 +203,12 @@ class BaseStreamSocketChannel<Socket: SocketProtocol>: BaseSocketChannel<Socket>
                 self.pipeline.fireUserInboundEventTriggered(ChannelEvent.outputClosed)
             case .input:
                 if self.inputShutdown {
-                    promise?.fail(ChannelError.inputClosed)
+                    promise?.fail(ChannelError._inputClosed)
+                    return
+                }
+                if self.outputShutdown {
+                    // Escalate to full closure
+                    self.close0(error: error, mode: .all, promise: promise)
                     return
                 }
                 switch error {
@@ -222,7 +237,7 @@ class BaseStreamSocketChannel<Socket: SocketProtocol>: BaseSocketChannel<Socket>
     }
 
     final override func hasFlushedPendingWrites() -> Bool {
-        return self.pendingWrites.isFlushPending
+        self.pendingWrites.isFlushPending
     }
 
     final override func markFlushPoint() {
@@ -252,7 +267,7 @@ class BaseStreamSocketChannel<Socket: SocketProtocol>: BaseSocketChannel<Socket>
 
     final override func bufferPendingWrite(data: NIOAny, promise: EventLoopPromise<Void>?) {
         if self.outputShutdown {
-            promise?.fail(ChannelError.outputClosed)
+            promise?.fail(ChannelError._outputClosed)
             return
         }
 

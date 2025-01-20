@@ -20,6 +20,8 @@
 #include <errno.h>
 #include <assert.h>
 #include <netinet/ip.h>
+#include <netinet/in.h>
+#include "dirent.h"
 
 int CNIODarwin_sendmmsg(int sockfd, CNIODarwin_mmsghdr *msgvec, unsigned int vlen, int flags) {
     // Some quick error checking. If vlen can't fit into int, we bail.
@@ -88,5 +90,11 @@ const int CNIODarwin_IPTOS_ECN_ECT1 = IPTOS_ECN_ECT1;
 const int CNIODarwin_IPTOS_ECN_CE = IPTOS_ECN_CE;
 const int CNIODarwin_IPV6_RECVPKTINFO = IPV6_RECVPKTINFO;
 const int CNIODarwin_IPV6_PKTINFO = IPV6_PKTINFO;
+
+const unsigned long CNIODarwin_IOCTL_VM_SOCKETS_GET_LOCAL_CID = IOCTL_VM_SOCKETS_GET_LOCAL_CID;
+
+const char* CNIODarwin_dirent_dname(struct dirent* ent) {
+    return ent->d_name;
+}
 
 #endif  // __APPLE__

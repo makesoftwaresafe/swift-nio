@@ -16,7 +16,7 @@
 
 /// A 24-bit unsigned integer value type.
 @usableFromInline
-struct _UInt24 {
+struct _UInt24: Sendable {
     @usableFromInline var _backing: (UInt16, UInt8)
 
     @inlinable
@@ -48,25 +48,24 @@ extension Int {
     }
 }
 
-
 extension _UInt24: Equatable {
     @inlinable
-    public static func ==(lhs: _UInt24, rhs: _UInt24) -> Bool {
-        return lhs._backing == rhs._backing
+    public static func == (lhs: _UInt24, rhs: _UInt24) -> Bool {
+        lhs._backing == rhs._backing
     }
 }
 
 extension _UInt24: CustomStringConvertible {
     @usableFromInline
     var description: String {
-        return UInt32(self).description
+        UInt32(self).description
     }
 }
 
 // MARK: _UInt56
 
 /// A 56-bit unsigned integer value type.
-struct _UInt56 {
+struct _UInt56: Sendable {
     @usableFromInline var _backing: (UInt32, UInt16, UInt8)
 
     @inlinable init(_ value: UInt64) {
@@ -75,7 +74,7 @@ struct _UInt56 {
 
     static let bitWidth: Int = 56
 
-    private static let initializeUInt64 : UInt64 = (1 << 56) - 1
+    private static let initializeUInt64: UInt64 = (1 << 56) - 1
     static let max: _UInt56 = .init(initializeUInt64)
     static let min: _UInt56 = .init(0)
 }
@@ -88,9 +87,11 @@ extension _UInt56 {
 
 extension UInt64 {
     init(_ value: _UInt56) {
-        self = IntegerBitPacking.packUInt32UInt16UInt8(value._backing.0,
-                                                       value._backing.1,
-                                                       value._backing.2)
+        self = IntegerBitPacking.packUInt32UInt16UInt8(
+            value._backing.0,
+            value._backing.1,
+            value._backing.2
+        )
     }
 }
 
@@ -102,13 +103,13 @@ extension Int {
 
 extension _UInt56: Equatable {
     @inlinable
-    public static func ==(lhs: _UInt56, rhs: _UInt56) -> Bool {
-        return lhs._backing == rhs._backing
+    public static func == (lhs: _UInt56, rhs: _UInt56) -> Bool {
+        lhs._backing == rhs._backing
     }
 }
 
 extension _UInt56: CustomStringConvertible {
     var description: String {
-        return UInt64(self).description
+        UInt64(self).description
     }
 }

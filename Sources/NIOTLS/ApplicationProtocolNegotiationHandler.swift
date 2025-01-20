@@ -2,7 +2,7 @@
 //
 // This source file is part of the SwiftNIO open source project
 //
-// Copyright (c) 2017-2021 Apple Inc. and the SwiftNIO project authors
+// Copyright (c) 2017-2024 Apple Inc. and the SwiftNIO project authors
 // Licensed under Apache License v2.0
 //
 // See LICENSE.txt for license information
@@ -26,7 +26,7 @@ import NIOCore
 ///
 /// Exactly what to do when falling back is the responsibility of a specific
 /// implementation.
-public enum ALPNResult: Equatable {
+public enum ALPNResult: Equatable, Sendable {
     /// ALPN negotiation succeeded. The associated value is the ALPN token that
     /// was negotiated.
     case negotiated(String)
@@ -34,6 +34,14 @@ public enum ALPNResult: Equatable {
     /// ALPN negotiation either failed, or never took place. The application
     /// should fall back to a default protocol choice or close the connection.
     case fallback
+
+    init(negotiated: String?) {
+        if let negotiated = negotiated {
+            self = .negotiated(negotiated)
+        } else {
+            self = .fallback
+        }
+    }
 }
 
 /// A helper `ChannelInboundHandler` that makes it easy to swap channel pipelines
@@ -61,8 +69,7 @@ public final class ApplicationProtocolNegotiationHandler: ChannelInboundHandler,
     public typealias InboundOut = Any
 
     private let completionHandler: (ALPNResult, Channel) -> EventLoopFuture<Void>
-    private var waitingForUser: Bool
-    private var eventBuffer: [NIOAny]
+    private var stateMachine = ProtocolNegotiationHandlerStateMachine<Void>()
 
     /// Create an `ApplicationProtocolNegotiationHandler` with the given completion
     /// callback.
@@ -71,8 +78,6 @@ public final class ApplicationProtocolNegotiationHandler: ChannelInboundHandler,
     ///   negotiation has completed.
     public init(alpnCompleteHandler: @escaping (ALPNResult, Channel) -> EventLoopFuture<Void>) {
         self.completionHandler = alpnCompleteHandler
-        self.waitingForUser = false
-        self.eventBuffer = []
     }
 
     /// Create an `ApplicationProtocolNegotiationHandler` with the given completion
@@ -87,52 +92,82 @@ public final class ApplicationProtocolNegotiationHandler: ChannelInboundHandler,
     }
 
     public func userInboundEventTriggered(context: ChannelHandlerContext, event: Any) {
-        guard let tlsEvent = event as? TLSUserEvent else {
+        switch self.stateMachine.userInboundEventTriggered(event: event) {
+        case .fireUserInboundEventTriggered:
             context.fireUserInboundEventTriggered(event)
-            return
-        }
 
-        if case .handshakeCompleted(let p) = tlsEvent {
-            handshakeCompleted(context: context, negotiatedProtocol: p)
-        } else {
-            context.fireUserInboundEventTriggered(event)
+        case .invokeUserClosure(let result):
+            self.invokeUserClosure(context: context, result: result)
         }
     }
 
     public func channelRead(context: ChannelHandlerContext, data: NIOAny) {
-        if waitingForUser {
-            eventBuffer.append(data)
-        } else {
+        switch self.stateMachine.channelRead(data: data) {
+        case .fireChannelRead:
             context.fireChannelRead(data)
+
+        case .none:
+            break
         }
     }
 
-    private func handshakeCompleted(context: ChannelHandlerContext, negotiatedProtocol: String?) {
-        waitingForUser = true
+    public func channelInactive(context: ChannelHandlerContext) {
+        self.stateMachine.channelInactive()
 
-        let result: ALPNResult
-        if let negotiatedProtocol = negotiatedProtocol {
-            result = .negotiated(negotiatedProtocol)
-        } else {
-            result = .fallback
-        }
+        context.fireChannelInactive()
+    }
 
+    private func invokeUserClosure(context: ChannelHandlerContext, result: ALPNResult) {
         let switchFuture = self.completionHandler(result, context.channel)
-        switchFuture.whenComplete { (_: Result<Void, Error>) in
+        let loopBoundSelfAndContext = NIOLoopBound((self, context), eventLoop: context.eventLoop)
+
+        switchFuture
+            .hop(to: context.eventLoop)
+            .whenComplete { result in
+                let (`self`, context) = loopBoundSelfAndContext.value
+                self.userFutureCompleted(context: context, result: result)
+            }
+    }
+
+    private func userFutureCompleted(context: ChannelHandlerContext, result: Result<Void, Error>) {
+        context.eventLoop.assertInEventLoop()
+
+        switch self.stateMachine.userFutureCompleted(with: result) {
+        case .fireErrorCaughtAndRemoveHandler(let error):
+            context.fireErrorCaught(error)
+            context.pipeline.syncOperations.removeHandler(self, promise: nil)
+
+        case .fireErrorCaughtAndStartUnbuffering(let error):
+            context.fireErrorCaught(error)
             self.unbuffer(context: context)
-            context.pipeline.removeHandler(self, promise: nil)
+
+        case .startUnbuffering:
+            self.unbuffer(context: context)
+
+        case .removeHandler:
+            context.pipeline.syncOperations.removeHandler(self, promise: nil)
+
+        case .none:
+            break
         }
     }
 
     private func unbuffer(context: ChannelHandlerContext) {
-        for datum in eventBuffer {
-            context.fireChannelRead(datum)
-        }
-        let buffer = eventBuffer
-        eventBuffer = []
-        waitingForUser = false
-        if buffer.count > 0 {
-            context.fireChannelReadComplete()
+        context.eventLoop.assertInEventLoop()
+
+        while true {
+            switch self.stateMachine.unbuffer() {
+            case .fireChannelRead(let data):
+                context.fireChannelRead(data)
+
+            case .fireChannelReadCompleteAndRemoveHandler:
+                context.fireChannelReadComplete()
+                context.pipeline.syncOperations.removeHandler(self, promise: nil)
+                return
+            }
         }
     }
 }
+
+@available(*, unavailable)
+extension ApplicationProtocolNegotiationHandler: Sendable {}

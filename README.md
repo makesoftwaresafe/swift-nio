@@ -11,7 +11,7 @@ It's like [Netty](https://netty.io), but written for Swift.
 
 The SwiftNIO project is split across multiple repositories:
 
-Repository | NIO 2 (Swift 5.4+)
+Repository | NIO 2 (Swift 5.7+)
 --- | ---
 [https://github.com/apple/swift-nio][repo-nio] <br> SwiftNIO core | `from: "2.0.0"`
 [https://github.com/apple/swift-nio-ssl][repo-nio-ssl] <br> TLS (SSL) support | `from: "2.0.0"`
@@ -34,6 +34,7 @@ Within this repository we have a number of products that provide different funct
 - `NIOHTTP1`. This provides a low-level HTTP/1.1 protocol implementation.
 - `NIOWebSocket`. This provides a low-level WebSocket protocol implementation.
 - `NIOTestUtils`. This provides a number of helpers for testing projects that use SwiftNIO.
+- `NIOFileSystem`. This provides `async` APIs for interacting with the file system.
 
 ### Protocol Implementations
 
@@ -43,33 +44,50 @@ Below you can find a list of a few protocol implementations that are done with S
 
 Low-level protocol implementations are often a collection of [`ChannelHandler`][ch]s that implement a protocol but still require the user to have a good understanding of SwiftNIO. Often, low-level protocol implementations will then be wrapped in high-level libraries with a nicer, more user-friendly API.
 
-Protocol | Client | Server | Repository | Module | Comment
+Protocol | Client<br />(Sends requests) | Server<br />(Responds to requests) | Repository | Module | Comment
 --- |  --- | --- | --- | --- | ---
-HTTP/1 | ✅| ✅ | [apple/swift-nio](https://github.com/apple/swift-nio) | [`NIOHTTP1`](https://apple.github.io/swift-nio/docs/current/NIOHTTP1/index.html) | official NIO project
-HTTP/2 | ✅| ✅ | [apple/swift-nio-http2](https://github.com/apple/swift-nio-http2) | [`NIOHTTP2`](https://apple.github.io/swift-nio-http2/docs/current/NIOHTTP2/index.html) | official NIO project
-WebSocket | ✅| ✅ | [apple/swift-nio](https://github.com/apple/swift-nio) | [`NIOWebSocket`](https://apple.github.io/swift-nio/docs/current/NIOWebSocket/index.html) | official NIO project
-TLS | ✅ | ✅ | [apple/swift-nio-ssl](https://github.com/apple/swift-nio-ssl) | [`NIOSSL`](https://apple.github.io/swift-nio-ssl/docs/current/NIOSSL/index.html) | official NIO project
-SSH | ✅ | ✅ | [apple/swift-nio-ssh][repo-nio-ssh] | _n/a_ | official NIO project
+HTTP/1 | ✅| ✅ | [apple/swift-nio](https://github.com/apple/swift-nio) | [`NIOHTTP1`][nioh1] | official NIO project
+HTTP/2 | ✅| ✅ | [apple/swift-nio-http2](https://github.com/apple/swift-nio-http2) | [`NIOHTTP2`][nioh2] | official NIO project
+WebSocket | ✅| ✅ | [apple/swift-nio](https://github.com/apple/swift-nio) | [`NIOWebSocket`][niows] | official NIO project
+TLS | ✅ | ✅ | [apple/swift-nio-ssl](https://github.com/apple/swift-nio-ssl) | [`NIOSSL`][niossl] | official NIO project
+SSH | ✅ | ✅ | [apple/swift-nio-ssh][repo-nio-ssh] | [`NIOSSH`][niossh] | official NIO project
 
 
 #### High-level implementations
 
 High-level implementations are usually libraries that come with an API that doesn't expose SwiftNIO's [`ChannelPipeline`][cp] and can therefore be used with very little (or no) SwiftNIO-specific knowledge. The implementations listed below do still do all of their I/O in SwiftNIO and integrate really well with the SwiftNIO ecosystem.
 
-Protocol | Client | Server | Repository | Module | Comment
+Protocol | Client<br />(Sends requests) | Server<br />(Responds to requests) | Repository | Module | Comment
 --- |  --- | --- | --- | --- | ---
 HTTP | ✅| ❌ | [swift-server/async-http-client](https://github.com/swift-server/async-http-client) | `AsyncHTTPClient` | SSWG community project
 gRPC | ✅| ✅ | [grpc/grpc-swift](https://github.com/grpc/grpc-swift) | `GRPC` | also offers a low-level API; SSWG community project
-APNS | ✅ | ❌ | [kylebrowning/APNSwift](https://github.com/kylebrowning/APNSwift) | `APNSwift` | SSWG community project
+APNS | ✅ | ❌ | [swift-server-community/APNSwift](https://github.com/swift-server-community/APNSwift) | `APNSwift` | SSWG community project
 PostgreSQL | ✅ | ❌ | [vapor/postgres-nio](https://github.com/vapor/postgres-nio) | `PostgresNIO` | SSWG community project
-Redis | ✅ | ❌ | [mordil/swift-redi-stack](https://gitlab.com/Mordil/swift-redi-stack) | `RediStack` | SSWG community project
+Redis | ✅ | ❌ | [swift-server/RediStack](https://github.com/swift-server/RediStack) | `RediStack` | SSWG community project
 
 ### Supported Versions
 
 ### SwiftNIO 2
+
 This is the current version of SwiftNIO and will be supported for the foreseeable future.
 
-The latest released SwiftNIO 2 version supports Swift 5.4+. NIO 2.29.0 and older support Swift 5.0+, NIO 2.39.0 and older support Swift 5.2+.
+### Swift Versions
+
+We commit to support the most recently released swift version (currently 5.10) and the last two minor releases before that unless this is impossible to do in one codebase.
+In addition checks are run against the latest beta release (if any) as well as the nightly swift builds and the intent is that these should pass.
+
+The most recent versions of SwiftNIO support Swift 5.9 and newer. The minimum Swift version supported by SwiftNIO releases are detailed below:
+
+SwiftNIO            | Minimum Swift Version
+--------------------|----------------------
+`2.0.0 ..< 2.30.0`  | 5.0
+`2.30.0 ..< 2.40.0` | 5.2
+`2.40.0 ..< 2.43.0` | 5.4
+`2.43.0 ..< 2.51.0` | 5.5.2
+`2.51.0 ..< 2.60.0` | 5.6
+`2.60.0 ..< 2.65.0` | 5.7
+`2.65.0 ..< 2.76.0` | 5.8
+`2.76.0 ...`        | 5.9
 
 ### SwiftNIO 1
 SwiftNIO 1 is considered end of life - it is strongly recommended that you move to a newer version.  The Core NIO team does not actively work on this version.  No new features will be added to this version but PRs which fix bugs or security vulnerabilities will be accepted until the end of May 2022.
@@ -94,12 +112,11 @@ In SwiftPM that can be easily done specifying for example `from: "2.0.0"` meanin
 SemVer and SwiftNIO's Public API guarantees should result in a working program without having to worry about testing every single version for compatibility.
 
 
-
 ## Conceptual Overview
 
 SwiftNIO is fundamentally a low-level tool for building high-performance networking applications in Swift. It particularly targets those use-cases where using a "thread-per-connection" model of concurrency is inefficient or untenable. This is a common limitation when building servers that use a large number of relatively low-utilization connections, such as HTTP servers.
 
-To achieve its goals SwiftNIO extensively uses "non-blocking I/O": hence the name! Non-blocking I/O differs from the more common blocking I/O model because the application does not wait for data to be sent to or received from the network: instead, SwiftNIO asks for the kernel to notify it when I/O operations can be performed without waiting.
+To achieve its goals, SwiftNIO extensively uses "non-blocking I/O": hence the name! Non-blocking I/O differs from the more common blocking I/O model because the application does not wait for data to be sent to or received from the network: instead, SwiftNIO asks for the kernel to notify it when I/O operations can be performed without waiting.
 
 SwiftNIO does not aim to provide high-level solutions like, for example, web frameworks do. Instead, SwiftNIO is focused on providing the low-level building blocks for these higher-level applications. When it comes to building a web application, most users will not want to use SwiftNIO directly: instead, they'll want to use one of the many great web frameworks available in the Swift ecosystem. Those web frameworks, however, may choose to use SwiftNIO under the covers to provide their networking support.
 
@@ -122,7 +139,7 @@ All SwiftNIO applications are ultimately constructed of these various components
 
 #### EventLoops and EventLoopGroups
 
-The basic I/O primitive of SwiftNIO is the event loop. The event loop is an object that waits for events (usually I/O related events, such as "data received") to happen and then fires some kind of callback when they do. In almost all SwiftNIO applications there will be relatively few event loops: usually only one or two per CPU core the application wants to use. Generally speaking event loops run for the entire lifetime of your application, spinning in an endless loop dispatching events.
+The basic I/O primitive of SwiftNIO is the event loop. The event loop is an object that waits for events (usually I/O related events, such as "data received") to happen and then fires some kind of callback when they do. In almost all SwiftNIO applications there will be relatively few event loops: usually only one or two per CPU core the application wants to use. Generally speaking, event loops run for the entire lifetime of your application, spinning in an endless loop dispatching events.
 
 Event loops are gathered together into event loop *groups*. These groups provide a mechanism to distribute work around the event loops. For example, when listening for inbound connections the listening socket will be registered on one event loop. However, we don't want all connections that are accepted on that listening socket to be registered with the same event loop, as that would potentially overload one event loop while leaving the others empty. For that reason, the event loop group provides the ability to spread load across multiple event loops.
 
@@ -150,7 +167,7 @@ In general, [`ChannelHandler`][ch]s are designed to be highly re-usable componen
 
 SwiftNIO ships with many [`ChannelHandler`][ch]s built in that provide useful functionality, such as HTTP parsing. In addition, high-performance applications will want to provide as much of their logic as possible in [`ChannelHandler`][ch]s, as it helps avoid problems with context switching.
 
-Additionally, SwiftNIO ships with a few [`Channel`][c] implementations. In particular, it ships with `ServerSocketChannel`, a [`Channel`][c] for sockets that accept inbound connections; `SocketChannel`, a [`Channel`][c] for TCP connections; and `DatagramChannel`, a [`Channel`][c] for UDP sockets. All of these are provided by the `NIOPosix` module. It also provides[`EmbeddedChannel`][ec], a [`Channel`][c] primarily used for testing, provided by the `NIOEmbedded` module.
+Additionally, SwiftNIO ships with a few [`Channel`][c] implementations. In particular, it ships with `ServerSocketChannel`, a [`Channel`][c] for sockets that accept inbound connections; `SocketChannel`, a [`Channel`][c] for TCP connections; and `DatagramChannel`, a [`Channel`][c] for UDP sockets. All of these are provided by the `NIOPosix` module. It also provides [`EmbeddedChannel`][ec], a [`Channel`][c] primarily used for testing, provided by the `NIOEmbedded` module.
 
 ##### A Note on Blocking
 
@@ -166,7 +183,7 @@ While it is possible to configure and register [`Channel`][c]s with [`EventLoop`
 
 For this reason, SwiftNIO ships a number of `Bootstrap` objects whose purpose is to streamline the creation of channels. Some `Bootstrap` objects also provide other functionality, such as support for Happy Eyeballs for making TCP connection attempts.
 
-Currently SwiftNIO ships with three `Bootstrap` objects in the `NIOPosix` module: [`ServerBootstrap`](https://apple.github.io/swift-nio/docs/current/NIOPosix/Classes/ServerBootstrap.html), for bootstrapping listening channels; [`ClientBootstrap`](https://apple.github.io/swift-nio/docs/current/NIOPosix/Classes/ClientBootstrap.html), for bootstrapping client TCP channels; and [`DatagramBootstrap`](https://apple.github.io/swift-nio/docs/current/NIOPosix/Classes/DatagramBootstrap.html) for bootstrapping UDP channels.
+Currently SwiftNIO ships with three `Bootstrap` objects in the `NIOPosix` module: [`ServerBootstrap`][sbootstrap], for bootstrapping listening channels; [`ClientBootstrap`][cbootstrap], for bootstrapping client TCP channels; and [`DatagramBootstrap`][dbootstrap] for bootstrapping UDP channels.
 
 #### ByteBuffer
 
@@ -186,7 +203,7 @@ One major difference between writing concurrent code and writing synchronous cod
 
 An [`EventLoopFuture<T>`][elf] is essentially a container for the return value of a function that will be populated *at some time in the future*. Each [`EventLoopFuture<T>`][elf] has a corresponding [`EventLoopPromise<T>`][elp], which is the object that the result will be put into. When the promise is succeeded, the future will be fulfilled.
 
-If you had to poll the future to detect when it completed that would be quite inefficient, so [`EventLoopFuture<T>`][elf] is designed to have managed callbacks. Essentially, you can hang callbacks off the future that will be executed when a result is available. The [`EventLoopFuture<T>`][elf] will even carefully arrange the scheduling to ensure that these callbacks always execute on the event loop that initially created the promise, which helps ensure that you don't need too much synchronization around [`EventLoopFuture<T>`][elf] callbacks.
+If you had to poll the future to detect when it completed that would be quite inefficient, so [`EventLoopFuture<T>`][elf] is designed to have managed callbacks. Essentially, you can chain callbacks off the future that will be executed when a result is available. The [`EventLoopFuture<T>`][elf] will even carefully arrange the scheduling to ensure that these callbacks always execute on the event loop that initially created the promise, which helps ensure that you don't need too much synchronization around [`EventLoopFuture<T>`][elf] callbacks.
 
 Another important topic for consideration is the difference between how the promise passed to `close` works as opposed to `closeFuture` on a [`Channel`][c]. For example, the promise passed into `close` will succeed after the [`Channel`][c] is closed down but before the [`ChannelPipeline`][cp] is completely cleared out. This will allow you to take action on the [`ChannelPipeline`][cp] before it is completely cleared out, if needed. If it is desired to wait for the [`Channel`][c] to close down and the [`ChannelPipeline`][cp] to be cleared out without any further action, then the better option would be to wait for the `closeFuture` to succeed.
 
@@ -202,7 +219,7 @@ The core SwiftNIO repository will contain a few extremely important protocol imp
 
 ## Documentation
 
- - [API documentation](https://apple.github.io/swift-nio/docs/current/NIOCore/index.html)
+ - [API documentation](https://swiftpackageindex.com/apple/swift-nio/main/documentation/nio)
 
 ## Example Usage
 
@@ -243,7 +260,7 @@ dependencies: [
 
 and then adding the appropriate SwiftNIO module(s) to your target dependencies.
 The syntax for adding target dependencies differs slightly between Swift
-versions. For example, if you want to depend on the `NIOCore`, `NIOPosix` and 
+versions. For example, if you want to depend on the `NIOCore`, `NIOPosix` and
 `NIOHTTP1` modules, specify the following dependencies:
 
 #### Swift 5.4 and newer (`swift-tools-version:5.4`)
@@ -276,14 +293,8 @@ echo "Hello SwiftNIO" | nc localhost 9999
 
 If all goes well, you'll see the message echoed back to you.
 
-To work on SwiftNIO in Xcode 11+, you can just open the `Package.swift`
+To work on SwiftNIO in Xcode, you can just open the `Package.swift`
 file in Xcode and use Xcode's support for SwiftPM Packages.
-
-If you want to develop SwiftNIO with Xcode 10, you have to generate an Xcode project:
-
-```bash
-swift package generate-xcodeproj
-```
 
 ### An alternative: using `docker-compose`
 
@@ -305,9 +316,9 @@ First make sure you have [Docker](https://www.docker.com/community-edition) inst
   Will create a base image, compile SwiftNIO, and run a sample `NIOHTTP1Server` on
   `localhost:8888`. Test it by `curl http://localhost:8888`
 
-- `docker-compose -f docker/docker-compose.yaml -f docker/docker-compose.2004.54.yaml run test`
+- `docker-compose -f docker/docker-compose.yaml -f docker/docker-compose.2204.57.yaml run test`
 
-  Will create a base image using Ubuntu 20.04 and swift 5.4, compile SwiftNIO and run the unit and integration tests.  Files exist for other ubuntu and swift versions in the docker directory.
+  Will create a base image using Ubuntu 22.04 and Swift 5.7, compile SwiftNIO and run the unit and integration tests.  Files exist for other Ubuntu and swift versions in the docker directory.
 
 
 ## Developing SwiftNIO
@@ -329,7 +340,7 @@ have a few prerequisites installed on your system.
 
 ### Linux
 
-- Swift 5.2, 5.3, or 5.4 from [swift.org/download](https://swift.org/download/#releases). We always recommend to use the latest released version.
+- Swift 5.7 or newer from [swift.org/download](https://swift.org/download/#releases). We always recommend to use the latest released version.
 - netcat (for integration tests only)
 - lsof (for integration tests only)
 - shasum (for integration tests only)
@@ -348,18 +359,39 @@ apt-get install -y git curl libatomic1 libxml2 netcat-openbsd lsof perl
 dnf install swift-lang /usr/bin/nc /usr/bin/lsof /usr/bin/shasum
 ```
 
-[ch]: https://apple.github.io/swift-nio/docs/current/NIOCore/Protocols/ChannelHandler.html
-[c]: https://apple.github.io/swift-nio/docs/current/NIOCore/Protocols/Channel.html
-[chc]: https://apple.github.io/swift-nio/docs/current/NIOCore/Classes/ChannelHandlerContext.html
-[ec]: https://apple.github.io/swift-nio/docs/current/NIOCore/Classes/EmbeddedChannel.html
-[el]: https://apple.github.io/swift-nio/docs/current/NIOCore/Protocols/EventLoop.html
-[eel]: https://apple.github.io/swift-nio/docs/current/NIOCore/Classes/EmbeddedEventLoop.html
-[elg]: https://apple.github.io/swift-nio/docs/current/NIOCore/Protocols/EventLoopGroup.html
-[bb]: https://apple.github.io/swift-nio/docs/current/NIOCore/Structs/ByteBuffer.html
-[elf]: https://apple.github.io/swift-nio/docs/current/NIOCore/Classes/EventLoopFuture.html
-[elp]: https://apple.github.io/swift-nio/docs/current/NIOCore/Structs/EventLoopPromise.html
-[cp]: https://apple.github.io/swift-nio/docs/current/NIOCore/Classes/ChannelPipeline.html
-[mtelg]: https://apple.github.io/swift-nio/docs/current/NIOPosix/Classes/MultiThreadedEventLoopGroup.html
+### Benchmarks
+
+Benchmarks for `swift-nio` are in a separate Swift Package in the `Benchmarks` subfolder of this repository.
+They use the [`package-benchmark`](https://github.com/ordo-one/package-benchmark) plugin.
+Benchmarks depends on the [`jemalloc`](https://jemalloc.net) memory allocation library, which is used by `package-benchmark` to capture memory allocation statistics.
+An installation guide can be found in the [Getting Started article](https://swiftpackageindex.com/ordo-one/package-benchmark/documentation/benchmark/gettingstarted#Installing-Prerequisites-and-Platform-Support) of `package-benchmark`.
+Afterwards you can run the benchmarks from CLI by going to the `Benchmarks` subfolder (e.g. `cd Benchmarks`) and invoking:
+```
+swift package benchmark
+```
+
+For more information please refer to `swift package benchmark --help` or the [documentation of `package-benchmark`](https://swiftpackageindex.com/ordo-one/package-benchmark/documentation/benchmark).
+
+[ch]: https://swiftpackageindex.com/apple/swift-nio/main/documentation/niocore/channelhandler
+[c]: https://swiftpackageindex.com/apple/swift-nio/main/documentation/niocore/channel
+[chc]: https://swiftpackageindex.com/apple/swift-nio/main/documentation/niocore/channelhandlercontext
+[ec]: https://swiftpackageindex.com/apple/swift-nio/main/documentation/nioembedded/embeddedchannel
+[el]: https://swiftpackageindex.com/apple/swift-nio/main/documentation/niocore/eventloop
+[eel]: https://swiftpackageindex.com/apple/swift-nio/main/documentation/nioembedded/embeddedeventloop
+[elg]: https://swiftpackageindex.com/apple/swift-nio/main/documentation/niocore/eventloopgroup
+[bb]: https://swiftpackageindex.com/apple/swift-nio/main/documentation/niocore/bytebuffer
+[elf]: https://swiftpackageindex.com/apple/swift-nio/main/documentation/niocore/eventloopfuture
+[elp]: https://swiftpackageindex.com/apple/swift-nio/main/documentation/niocore/eventlooppromise
+[cp]: https://swiftpackageindex.com/apple/swift-nio/main/documentation/niocore/channelpipeline
+[sbootstrap]: https://swiftpackageindex.com/apple/swift-nio/main/documentation/nioposix/serverbootstrap
+[cbootstrap]: https://swiftpackageindex.com/apple/swift-nio/main/documentation/nioposix/clientbootstrap
+[dbootstrap]: https://swiftpackageindex.com/apple/swift-nio/main/documentation/nioposix/datagrambootstrap
+[mtelg]: https://swiftpackageindex.com/apple/swift-nio/main/documentation/nioposix/multithreadedeventloopgroup
+[nioh1]: https://swiftpackageindex.com/apple/swift-nio/main/documentation/niohttp1
+[nioh2]: https://swiftpackageindex.com/apple/swift-nio-http2/main/documentation/niohttp2
+[niows]: https://swiftpackageindex.com/apple/swift-nio/main/documentation/niowebsocket
+[niossl]: https://swiftpackageindex.com/apple/swift-nio-ssl/main/documentation/niossl
+[niossh]: https://swiftpackageindex.com/apple/swift-nio-ssh/main/documentation/niossh
 [pthreads]: https://en.wikipedia.org/wiki/POSIX_Threads
 [kqueue]: https://en.wikipedia.org/wiki/Kqueue
 [epoll]: https://en.wikipedia.org/wiki/Epoll
@@ -369,10 +401,3 @@ dnf install swift-lang /usr/bin/nc /usr/bin/lsof /usr/bin/shasum
 [repo-nio-ssl]: https://github.com/apple/swift-nio-ssl
 [repo-nio-transport-services]: https://github.com/apple/swift-nio-transport-services
 [repo-nio-ssh]: https://github.com/apple/swift-nio-ssh
-
-### Speeding up testing
-It's possible to run the test suite in parallel, it can save significant time if you have a larger multi-core machine, just add `--parallel` when running the tests. This can speed up the run time of the test suite by 30x or more.
-
-```
-swift test --parallel
-```
